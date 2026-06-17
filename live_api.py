@@ -136,7 +136,12 @@ def _request(path, api_key, params=None):
 
 
 def _normalize(fixtures, matcher, model):
-    """Converte fixtures crus da API para o formato do front + anexa previsão."""
+    """Converte fixtures crus da API para o formato do front + anexa previsão.
+
+    Memoiza predict() por par (home, away) para não recalcular a matriz quando
+    o mesmo confronto aparece mais de uma vez na lista (ex: Copa com replays).
+    """
+    pred_cache = {}
     out = []
     for fx in fixtures:
         fixture = fx.get("fixture", {})
@@ -154,8 +159,10 @@ def _normalize(fixtures, matcher, model):
 
         pred = None
         if home_m and away_m:
-            # Jogo de seleção em sede única (Copa) costuma ser campo neutro.
-            pred = model.predict(home_m, away_m, neutral=True)
+            key = (home_m, away_m)
+            if key not in pred_cache:
+                pred_cache[key] = model.predict(home_m, away_m, neutral=True)
+            pred = pred_cache[key]
 
         out.append({
             "id": fixture.get("id"),

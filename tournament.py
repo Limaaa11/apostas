@@ -192,7 +192,10 @@ def simulate_tournament(model, n_sims=10000, seed=42):
         for t in field:
             counts["knockout"][t] += 1
 
-        # --- quartas de final em diante (bracket de 32) ---
+        # --- mata-mata (bracket de 32) ---
+        # Simplificação: seeding por ELO em vez do chaveamento posicional real
+        # (1A vs 2B, etc.). Para simulação estatística de longo prazo, o efeito
+        # é marginal e o ELO captura a força relativa dos times.
         seeded = sorted(field, key=lambda t: model.elo.get(t, 1500), reverse=True)
 
         # R32 → R16

@@ -214,6 +214,13 @@ class Model:
             M /= (1.0 + self.delta * draw_prob_pre)
         return M, lam_h, lam_a
 
+    @staticmethod
+    def _goal_totals(M):
+        """Distribuição de totais de gols via convolução das marginais (vetorizado)."""
+        h_marg = M.sum(axis=1)
+        a_marg = M.sum(axis=0)
+        return np.convolve(h_marg, a_marg)
+
     def predict(self, home, away, neutral=True):
         if not (self.has(home) and self.has(away)):
             return None
@@ -221,18 +228,11 @@ class Model:
         p_home = float(np.tril(M, -1).sum())
         p_draw = float(np.trace(M))
         p_away = float(np.triu(M, 1).sum())
-        # placar mais provável
         i, j = np.unravel_index(M.argmax(), M.shape)
-        # totais
-        n = M.shape[0]
-        tot = np.zeros(2 * n)
-        for x in range(n):
-            for y in range(n):
-                tot[x + y] += M[x, y]
+        tot = self._goal_totals(M)
         p_over25 = float(tot[3:].sum())
         p_btts = float(M[1:, 1:].sum())
-        # top placares
-        flat = [((x, y), float(M[x, y])) for x in range(n) for y in range(n)]
+        flat = [((x, y), float(M[x, y])) for x in range(M.shape[0]) for y in range(M.shape[0])]
         flat.sort(key=lambda t: -t[1])
         top_scores = [{"score": f"{a}-{b}", "p": p} for (a, b), p in flat[:5]]
         elo_diff = float(self.elo.get(home, 1500)) - float(self.elo.get(away, 1500))
@@ -260,14 +260,9 @@ class Model:
         p_D = float(np.trace(M))
         p_A = float(np.triu(M, 1).sum())
 
-        tot = np.zeros(2 * n)
-        home_goals = np.zeros(n)
-        away_goals = np.zeros(n)
-        for x in range(n):
-            home_goals[x] = float(M[x, :].sum())
-            away_goals[x] = float(M[:, x].sum())
-            for y in range(n):
-                tot[x + y] += M[x, y]
+        home_goals = M.sum(axis=1)
+        away_goals = M.sum(axis=0)
+        tot = self._goal_totals(M)
 
         def ov(arr, k):
             return float(arr[k + 1:].sum())
@@ -302,16 +297,10 @@ class Model:
         p_ht_D = float(np.trace(M_ht))
         p_ht_A = float(np.triu(M_ht, 1).sum())
 
-        tot_ht = np.zeros(2 * maxg_ht)
-        tot_2t = np.zeros(2 * maxg_ht)
-        home_goals_2t = np.zeros(maxg_ht)
-        away_goals_2t = np.zeros(maxg_ht)
-        for x in range(maxg_ht):
-            home_goals_2t[x] = float(M_2t[x, :].sum())
-            away_goals_2t[x] = float(M_2t[:, x].sum())
-            for y in range(maxg_ht):
-                tot_ht[x + y] += M_ht[x, y]
-                tot_2t[x + y] += M_2t[x, y]
+        home_goals_2t = M_2t.sum(axis=1)
+        away_goals_2t = M_2t.sum(axis=0)
+        tot_ht = self._goal_totals(M_ht)
+        tot_2t = self._goal_totals(M_2t)
 
         btts = float(M[1:, 1:].sum())
         btts_ht = float(M_ht[1:, 1:].sum())

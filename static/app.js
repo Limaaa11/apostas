@@ -806,7 +806,9 @@ $("#ag-input").addEventListener("keydown", (e) => {
 });
 
 window.sendExample = (btn) => {
-  $("#ag-input").value = btn.textContent;
-  document.querySelector('[data-tab="agente"]').click();
+  $("#ag-input").value = btn.textContent.trim();
+  // Ativa a aba do agente sem depender de querySelector por texto
+  const agenteTab = Array.from($$(".tab")).find((t) => t.dataset.tab === "agente");
+  if (agenteTab && !agenteTab.classList.contains("active")) agenteTab.click();
   setTimeout(() => $("#ag-send").click(), 100);
 };

@@ -5,6 +5,7 @@ Rode:  python app.py
 Abra:  http://localhost:5000
 """
 import os
+import time
 from flask import Flask, render_template, request, jsonify, session
 import model_engine as me
 import live_api
@@ -313,9 +314,7 @@ _SESSION_TTL = 3600          # expira sessão após 1 hora de inatividade
 
 
 def _clean_agent_sessions():
-    now = os.times().elapsed if hasattr(os, "times") else 0
-    import time as _t
-    now = _t.time()
+    now = time.time()
     stale = [k for k, (ts, _) in _AGENT_HISTORIES.items() if now - ts > _SESSION_TTL]
     for k in stale:
         del _AGENT_HISTORIES[k]
@@ -323,7 +322,6 @@ def _clean_agent_sessions():
 
 @app.route("/api/agent", methods=["POST"])
 def agent_chat():
-    import time as _t
     d = request.get_json(force=True)
     msg = (d.get("message") or "").strip()
     if not msg:
@@ -334,10 +332,10 @@ def agent_chat():
         return jsonify({"error": "Informe sua ANTHROPIC_API_KEY no campo acima."}), 400
 
     _clean_agent_sessions()
-    _, history = _AGENT_HISTORIES.get(session_id, (_t.time(), []))
+    _, history = _AGENT_HISTORIES.get(session_id, (time.time(), []))
     try:
         result = ag.run_agent(msg, history=history, api_key=api_key)
-        _AGENT_HISTORIES[session_id] = (_t.time(), result["history"][-20:])
+        _AGENT_HISTORIES[session_id] = (time.time(), result["history"][-20:])
         return jsonify({"response": result["response"], "tools_used": result["tool_calls_made"]})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
