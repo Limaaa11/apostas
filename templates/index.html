@@ -18,11 +18,13 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="prev">📊 Previsão</button>
+    <button class="tab" data-tab="mercados">📋 Mercados</button>
     <button class="tab" data-tab="live">🔴 Ao Vivo</button>
     <button class="tab" data-tab="value">💰 Value Bets</button>
     <button class="tab" data-tab="banca">🛡️ Gestão de Banca</button>
     <button class="tab" data-tab="hist">📒 Histórico</button>
     <button class="tab" data-tab="rank">🏆 Ranking</button>
+    <button class="tab" data-tab="agente">🤖 Agente IA</button>
   </nav>
 
   <main>
@@ -43,6 +45,28 @@
         <button class="primary" id="p-go">Calcular</button>
       </div>
       <div id="prev-result"></div>
+    </section>
+
+    <!-- ABA MERCADOS -->
+    <section id="tab-mercados" class="panel">
+      <div class="card controls">
+        <div class="field">
+          <label>Mandante</label>
+          <input list="teams" id="m-home" placeholder="ex: Brazil">
+        </div>
+        <div class="field">
+          <label>Visitante</label>
+          <input list="teams" id="m-away" placeholder="ex: Argentina">
+        </div>
+        <div class="field check">
+          <label><input type="checkbox" id="m-neutral" checked> Campo neutro</label>
+        </div>
+        <button class="primary" id="m-go">Ver todos os mercados</button>
+      </div>
+      <p class="hint" style="margin:0 0 12px">
+        Digite a odd da casa em cada linha para ver o <b>EV</b> e as melhores apostas automaticamente. Odd justa = sem margem da casa.
+      </p>
+      <div id="mercados-result"></div>
     </section>
 
     <!-- ABA AO VIVO -->
@@ -210,6 +234,47 @@
         </table>
       </div>
     </section>
+    <!-- ABA AGENTE IA -->
+    <section id="tab-agente" class="panel">
+      <div class="card">
+        <h3>🤖 Agente de Análise — Copa 2026</h3>
+        <div class="controls wrap">
+          <div class="field grow">
+            <label>Chave da API Anthropic (fica só no seu navegador)</label>
+            <input type="password" id="ag-key" placeholder="sk-ant-...">
+          </div>
+          <button class="secondary" id="ag-save-key">Salvar chave</button>
+          <button class="secondary" id="ag-reset">Nova conversa</button>
+        </div>
+        <p class="hint" style="margin:6px 0 0">
+          O agente usa o modelo estatístico do sistema para analisar jogos, varrer mercados,
+          simular o torneio e calcular stakes. Exemplos de perguntas:
+        </p>
+        <div class="agent-examples">
+          <button class="example-btn" onclick="sendExample(this)">Analise França x Senegal e diga onde está o valor</button>
+          <button class="example-btn" onclick="sendExample(this)">Quais são as odds justas para Argentina ser campeã?</button>
+          <button class="example-btn" onclick="sendExample(this)">Compare Brasil e Marrocos e mostre todos os mercados</button>
+          <button class="example-btn" onclick="sendExample(this)">Liste os 10 times mais fortes da Copa 2026</button>
+        </div>
+      </div>
+
+      <div class="card agent-chat-card">
+        <div id="agent-messages" class="agent-messages">
+          <div class="agent-msg system">
+            <div class="msg-bubble">
+              Olá! Sou o agente de análise da Copa 2026. Posso prever jogos, calcular probabilidades,
+              simular o torneio e identificar apostas de valor. Como posso ajudar?
+            </div>
+          </div>
+        </div>
+        <div class="agent-input-row">
+          <textarea id="ag-input" class="agent-input" rows="2"
+            placeholder="Ex: Analise Alemanha x Curaçao e diga se Over 2.5 tem valor @ odd 1.45"></textarea>
+          <button class="primary" id="ag-send">Enviar</button>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <footer>

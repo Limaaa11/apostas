@@ -15,30 +15,58 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import poisson
+from scipy.special import i0 as bessel_i0
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(BASE_DIR, "results.csv")
 CACHE_PATH = os.path.join(BASE_DIR, "params.pkl")
 DATA_URL = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
 
-# Hiperparâmetros do treino (mesmos do notebook, com maxiter maior p/ convergir)
+# Hiperparâmetros do treino
 TRAIN_FROM = "2018-01-01"
-HALF_LIFE_DAYS = 730
+HALF_LIFE_DAYS = 500        # reduzido de 730: mais peso em resultados recentes
 MIN_GAMES = 5
-MAXITER = 1500
+MAXITER = 15000             # aumentado: garante convergência com 257 times
+
+# Peso extra para torneios de alto nível (Copa do Mundo recebe 2x)
+TOURNAMENT_WEIGHTS = {
+    "FIFA World Cup": 2.0,
+    "UEFA Euro": 1.8,
+    "Copa América": 1.8,
+    "FIFA World Cup qualification": 1.3,
+    "UEFA Nations League": 1.2,
+    "African Cup of Nations": 1.4,
+    "Friendly": 0.6,
+}
+
+
+DATA_MAX_AGE_HOURS = 12   # re-baixa CSV se mais velho que isso durante uma Copa
 
 
 # --------------------------------------------------------------------------- #
 # Dados
 # --------------------------------------------------------------------------- #
-def load_data():
-    """Carrega results.csv, baixando se necessário, e remove jogos não disputados."""
+def _should_refresh_data():
+    """Retorna True se o CSV está ausente ou mais velho que DATA_MAX_AGE_HOURS."""
     if not os.path.exists(DATA_PATH):
-        import requests
-        r = requests.get(DATA_URL, timeout=60)
-        r.raise_for_status()
-        with open(DATA_PATH, "wb") as f:
-            f.write(r.content)
+        return True
+    age_hours = (os.path.getmtime(DATA_PATH) - __import__("time").time()) * -1 / 3600
+    return age_hours > DATA_MAX_AGE_HOURS
+
+
+def load_data():
+    """Carrega results.csv, baixando/atualizando se necessário."""
+    if _should_refresh_data():
+        try:
+            import requests
+            r = requests.get(DATA_URL, timeout=60)
+            r.raise_for_status()
+            with open(DATA_PATH, "wb") as f:
+                f.write(r.content)
+        except Exception as e:
+            if not os.path.exists(DATA_PATH):
+                raise
+            print(f"[aviso] Falha ao atualizar dados: {e}. Usando cache local.")
     df = pd.read_csv(DATA_PATH, parse_dates=["date"])
     # Remove fixtures futuros sem placar (NaN) — eles quebram a verossimilhança.
     df = df.dropna(subset=["home_score", "away_score"]).reset_index(drop=True)
@@ -48,7 +76,8 @@ def load_data():
 
 def _data_signature(df):
     """Assinatura da base + hiperparâmetros, p/ invalidar o cache quando mudar."""
-    key = f"{len(df)}|{df.date.max()}|{TRAIN_FROM}|{HALF_LIFE_DAYS}|{MIN_GAMES}|{MAXITER}"
+    tw_key = str(sorted(TOURNAMENT_WEIGHTS.items()))
+    key = f"{len(df)}|{df.date.max()}|{TRAIN_FROM}|{HALF_LIFE_DAYS}|{MIN_GAMES}|{MAXITER}|{tw_key}"
     return hashlib.md5(key.encode()).hexdigest()
 
 
@@ -58,6 +87,10 @@ def _data_signature(df):
 def time_weights(dates, ref_date, half_life_days=HALF_LIFE_DAYS):
     age_days = (ref_date - pd.to_datetime(dates)).dt.days.values
     return np.exp(-np.log(2) * age_days / half_life_days)
+
+
+def tournament_weights(tournaments):
+    return np.array([TOURNAMENT_WEIGHTS.get(t, 1.0) for t in tournaments])
 
 
 def fit_dixon_coles(df_train, ref_date, half_life_days=HALF_LIFE_DAYS,
@@ -74,33 +107,45 @@ def fit_dixon_coles(df_train, ref_date, half_life_days=HALF_LIFE_DAYS,
     hg = d.home_score.values.astype(int)
     ag = d.away_score.values.astype(int)
     not_neutral = (~d.neutral).astype(float).values
-    w = time_weights(d.date, ref_date, half_life_days)
+    w = time_weights(d.date, ref_date, half_life_days) * tournament_weights(d.tournament)
 
     def neg_log_lik(params):
         alpha = np.concatenate([params[:n - 1], [-params[:n - 1].sum()]])
         beta = np.concatenate([params[n - 1:2 * n - 2], [-params[n - 1:2 * n - 2].sum()]])
-        home_adv, rho = params[-2], params[-1]
-        lam_h = np.exp(alpha[home_idx] - beta[away_idx] + home_adv * not_neutral)
-        lam_a = np.exp(alpha[away_idx] - beta[home_idx])
-        ll_pois = hg * np.log(lam_h) - lam_h + ag * np.log(lam_a) - lam_a
+        home_adv, rho, delta = params[-3], params[-2], params[-1]
+        # clip para evitar overflow em valores extremos durante a otimização
+        log_lam_h = np.clip(alpha[home_idx] - beta[away_idx] + home_adv * not_neutral, -6, 6)
+        log_lam_a = np.clip(alpha[away_idx] - beta[home_idx], -6, 6)
+        lam_h = np.exp(log_lam_h)
+        lam_a = np.exp(log_lam_a)
+        ll_pois = hg * log_lam_h - lam_h + ag * log_lam_a - lam_a
         tau = np.ones(len(d))
         m00 = (hg == 0) & (ag == 0); tau[m00] = 1 - lam_h[m00] * lam_a[m00] * rho
         m01 = (hg == 0) & (ag == 1); tau[m01] = 1 + lam_h[m01] * rho
         m10 = (hg == 1) & (ag == 0); tau[m10] = 1 + lam_a[m10] * rho
         m11 = (hg == 1) & (ag == 1); tau[m11] = 1 - rho
         tau = np.clip(tau, 1e-10, None)
-        return -(w * (ll_pois + np.log(tau))).sum()
+        # DIBP: inflação diagonal — P*(x,y) ∝ (1 + delta·I(x==y))·P_DC(x,y)
+        # normalização: Z = 1 + delta · P_draw_DC  onde P_draw_DC ≈ e^{-λh-λa}·I0(2√(λh·λa))
+        p_draw_dc = np.exp(-lam_h - lam_a) * bessel_i0(2.0 * np.sqrt(lam_h * lam_a))
+        norm_z = np.log(np.maximum(1.0 + delta * p_draw_dc, 1e-10))
+        is_draw = (hg == ag).astype(float)
+        dibp_ll = is_draw * np.log(1.0 + delta) - norm_z
+        return -(w * (ll_pois + np.log(tau) + dibp_ll)).sum()
 
-    x0 = np.zeros(2 * n)
-    x0[-2] = 0.25
-    x0[-1] = -0.1
-    bounds = [(None, None)] * (2 * n - 2) + [(0, 1.0), (-0.5, 0.5)]
+    x0 = np.zeros(2 * n + 1)   # +1 para delta (DIBP)
+    x0[-3] = 0.25               # home_adv
+    x0[-2] = -0.1               # rho
+    x0[-1] = 0.05               # delta inicial pequeno
+    bounds = [(None, None)] * (2 * n - 2) + [(0, 1.0), (-0.5, 0.5), (0.0, 0.6)]
+    n_params = len(x0)
     res = minimize(neg_log_lik, x0, method="L-BFGS-B", bounds=bounds,
-                   options={"maxiter": maxiter})
+                   options={"maxiter": maxiter, "maxfun": maxiter * n_params,
+                            "ftol": 1e-10, "gtol": 1e-6})
     alpha = np.concatenate([res.x[:n - 1], [-res.x[:n - 1].sum()]])
     beta = np.concatenate([res.x[n - 1:2 * n - 2], [-res.x[n - 1:2 * n - 2].sum()]])
     params_df = pd.DataFrame({"team": teams, "attack": alpha, "defense": beta})
-    return params_df, res.x[-2], res.x[-1], res
+    return params_df, res.x[-3], res.x[-2], res.x[-1], res
 
 
 def compute_elo(df_games, k_base=30, home_field=80, init=1500):
@@ -128,11 +173,12 @@ def compute_elo(df_games, k_base=30, home_field=80, init=1500):
 # Treino + cache
 # --------------------------------------------------------------------------- #
 class Model:
-    def __init__(self, params, home_adv, rho, elo, ref_date, n_train, converged):
+    def __init__(self, params, home_adv, rho, delta, elo, ref_date, n_train, converged):
         self.params = params                       # DataFrame: team, attack, defense
         self._p = params.set_index("team")
         self.home_adv = float(home_adv)
         self.rho = float(rho)
+        self.delta = float(delta)                  # DIBP draw-inflation parameter
         self.elo = elo                             # dict team -> rating
         self.ref_date = ref_date
         self.n_train = int(n_train)
@@ -158,6 +204,12 @@ class Model:
         M[1, 1] *= 1 - self.rho
         M = np.maximum(M, 0)
         M /= M.sum()
+        # DIBP: infla a diagonal (empates)
+        if self.delta > 0:
+            draw_prob_pre = float(np.trace(M))
+            diag = np.arange(M.shape[0])
+            M[diag, diag] *= (1.0 + self.delta)
+            M /= (1.0 + self.delta * draw_prob_pre)
         return M, lam_h, lam_a
 
     def predict(self, home, away, neutral=True):
@@ -181,6 +233,7 @@ class Model:
         flat = [((x, y), float(M[x, y])) for x in range(n) for y in range(n)]
         flat.sort(key=lambda t: -t[1])
         top_scores = [{"score": f"{a}-{b}", "p": p} for (a, b), p in flat[:5]]
+        elo_diff = float(self.elo.get(home, 1500)) - float(self.elo.get(away, 1500))
         return {
             "home": home, "away": away, "neutral": neutral,
             "lam_h": float(lam_h), "lam_a": float(lam_a),
@@ -190,8 +243,80 @@ class Model:
             "p_btts_yes": p_btts, "p_btts_no": 1 - p_btts,
             "elo_home": float(self.elo.get(home, 1500)),
             "elo_away": float(self.elo.get(away, 1500)),
+            "elo_diff": elo_diff,
             "top_scores": top_scores,
         }
+
+    def compute_markets(self, home, away, neutral=True):
+        """Retorna probabilidades para todos os mercados que o modelo suporta."""
+        if not (self.has(home) and self.has(away)):
+            return None
+        M, lam_h, lam_a = self.match_matrix(home, away, neutral)
+        n = M.shape[0]
+
+        p_H = float(np.tril(M, -1).sum())
+        p_D = float(np.trace(M))
+        p_A = float(np.triu(M, 1).sum())
+
+        tot = np.zeros(2 * n)
+        home_goals = np.zeros(n)
+        away_goals = np.zeros(n)
+        for x in range(n):
+            home_goals[x] = float(M[x, :].sum())
+            away_goals[x] = float(M[:, x].sum())
+            for y in range(n):
+                tot[x + y] += M[x, y]
+
+        def ov(arr, k):
+            return float(arr[k + 1:].sum())
+
+        def un(arr, k):
+            return float(arr[:k + 1].sum())
+
+        def sel(label, p):
+            p = max(min(float(p), 0.9999), 0.0001)
+            return {"label": label, "p": round(p, 4), "odd_justa": round(1.0 / p, 2)}
+
+        markets = [
+            {"market": "Resultado Final (1X2)", "icon": "⚽", "selections": [
+                sel(f"{home} vence (1)", p_H),
+                sel("Empate (X)", p_D),
+                sel(f"{away} vence (2)", p_A),
+            ]},
+            {"market": "Dupla Chance", "icon": "🎯", "selections": [
+                sel(f"1X — {home} ou Empate", p_H + p_D),
+                sel(f"12 — {home} ou {away}", p_H + p_A),
+                sel(f"X2 — Empate ou {away}", p_D + p_A),
+            ]},
+            {"market": "Ambas as Equipes Marcam", "icon": "🥅", "selections": [
+                sel("Sim", float(M[1:, 1:].sum())),
+                sel("Não", float(1 - M[1:, 1:].sum())),
+            ]},
+            {"market": "Total de Gols", "icon": "📊", "selections": [
+                sel("Over 0.5", ov(tot, 0)), sel("Under 0.5", un(tot, 0)),
+                sel("Over 1.5", ov(tot, 1)), sel("Under 1.5", un(tot, 1)),
+                sel("Over 2.5", ov(tot, 2)), sel("Under 2.5", un(tot, 2)),
+                sel("Over 3.5", ov(tot, 3)), sel("Under 3.5", un(tot, 3)),
+                sel("Over 4.5", ov(tot, 4)), sel("Under 4.5", un(tot, 4)),
+            ]},
+            {"market": f"Gols de {home}", "icon": "🔵", "selections": [
+                sel("Over 0.5", ov(home_goals, 0)), sel("Under 0.5", un(home_goals, 0)),
+                sel("Over 1.5", ov(home_goals, 1)), sel("Under 1.5", un(home_goals, 1)),
+                sel("Over 2.5", ov(home_goals, 2)), sel("Under 2.5", un(home_goals, 2)),
+            ]},
+            {"market": f"Gols de {away}", "icon": "🟠", "selections": [
+                sel("Over 0.5", ov(away_goals, 0)), sel("Under 0.5", un(away_goals, 0)),
+                sel("Over 1.5", ov(away_goals, 1)), sel("Under 1.5", un(away_goals, 1)),
+                sel("Over 2.5", ov(away_goals, 2)), sel("Under 2.5", un(away_goals, 2)),
+            ]},
+            {"market": "Resultado Exato (top 10)", "icon": "🎲", "selections": sorted(
+                [sel(f"{x}-{y}", float(M[x, y]))
+                 for x in range(min(n, 7)) for y in range(min(n, 7))],
+                key=lambda s: -s["p"]
+            )[:10]},
+        ]
+        return {"home": home, "away": away, "markets": markets,
+                "lam_h": round(float(lam_h), 3), "lam_a": round(float(lam_a), 3)}
 
     def ranking(self, top=30):
         rows = []
@@ -224,6 +349,7 @@ def get_model(force=False):
                 blob = pickle.load(f)
             if blob.get("sig") == sig:
                 _MODEL = Model(blob["params"], blob["home_adv"], blob["rho"],
+                               blob.get("delta", 0.0),
                                blob["elo"], blob["ref_date"], blob["n_train"],
                                blob["converged"])
                 return _MODEL
@@ -237,15 +363,15 @@ def get_model(force=False):
 def _train_and_cache(df, sig):
     ref_date = df.date.max() + pd.Timedelta(days=1)
     train_full = df[df.date >= TRAIN_FROM].copy()
-    params, ha, rho, res = fit_dixon_coles(train_full, ref_date)
+    params, ha, rho, delta, res = fit_dixon_coles(train_full, ref_date)
     elo = compute_elo(df.sort_values("date"))  # ELO sobre toda a história
     with open(CACHE_PATH, "wb") as f:
         pickle.dump({
             "sig": sig, "params": params, "home_adv": ha, "rho": rho,
-            "elo": elo, "ref_date": ref_date, "n_train": len(train_full),
-            "converged": bool(res.success),
+            "delta": delta, "elo": elo, "ref_date": ref_date,
+            "n_train": len(train_full), "converged": bool(res.success),
         }, f)
-    return Model(params, ha, rho, elo, ref_date, len(train_full), res.success)
+    return Model(params, ha, rho, delta, elo, ref_date, len(train_full), res.success)
 
 
 # --------------------------------------------------------------------------- #
@@ -394,6 +520,34 @@ def monte_carlo_bankroll(bets, bankroll=100.0, strategy="kelly", kelly_mult=0.25
                   "ev": b["ev"], "stake_pct": b["frac"]} for b in placed],
     }
     return metrics
+
+
+# --------------------------------------------------------------------------- #
+# Blend modelo + odds de mercado
+# --------------------------------------------------------------------------- #
+def remove_vig(odd_h, odd_d, odd_a):
+    """Remove margem da casa e retorna probabilidades justas (sem vig)."""
+    total = 1.0 / odd_h + 1.0 / odd_d + 1.0 / odd_a
+    return 1.0 / (odd_h * total), 1.0 / (odd_d * total), 1.0 / (odd_a * total)
+
+
+def blend_with_market(pred, odd_h, odd_d, odd_a, alpha=0.6):
+    """Mistura as probabilidades do modelo (peso alpha) com as do mercado sem vig.
+
+    alpha=0.6 → 60% modelo + 40% mercado.
+    Reduz erros quando o mercado tem informação que o histórico não captura
+    (lesões, escalação, pressão de torneio).
+    """
+    mh, md, ma = remove_vig(odd_h, odd_d, odd_a)
+    bh = alpha * pred["p_H"] + (1.0 - alpha) * mh
+    bd = alpha * pred["p_D"] + (1.0 - alpha) * md
+    ba = alpha * pred["p_A"] + (1.0 - alpha) * ma
+    total = bh + bd + ba
+    return {
+        "p_H": bh / total, "p_D": bd / total, "p_A": ba / total,
+        "market_H": mh, "market_D": md, "market_A": ma,
+        "alpha": alpha,
+    }
 
 
 def compare_strategies(bets, bankroll=100.0, n_sims=10000, min_edge=0.0):

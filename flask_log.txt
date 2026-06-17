@@ -7,3 +7,20 @@ WARNING: This is a development server. Do not use it in a production deployment.
 Press CTRL+C to quit
 127.0.0.1 - - [16/Jun/2026 20:53:38] "GET / HTTP/1.1" 200 -
 127.0.0.1 - - [16/Jun/2026 20:53:38] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:05:38] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:05:39] "GET /static/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [16/Jun/2026 23:05:39] "GET /static/app.js HTTP/1.1" 304 -
+127.0.0.1 - - [16/Jun/2026 23:05:39] "GET /api/model_info HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:05:39] "GET /api/teams HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:05:46] "GET /api/live?only_known=1 HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:05:48] "GET /api/upcoming?mode=worldcup&season=2026 HTTP/1.1" 400 -
+127.0.0.1 - - [16/Jun/2026 23:06:14] "POST /api/value HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:06:17] "GET /api/ranking?top=40 HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:35:19] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:35:20] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:35:20] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:35:22] "GET /api/ranking?top=40 HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:36:24] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [16/Jun/2026 23:36:24] "GET /static/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [16/Jun/2026 23:36:24] "GET /static/app.js HTTP/1.1" 304 -
+127.0.0.1 - - [16/Jun/2026 23:36:25] "GET /api/ranking?top=40 HTTP/1.1" 200 -

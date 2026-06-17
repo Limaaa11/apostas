@@ -4,11 +4,16 @@ Front-end web do sistema de previsão + gestão de banca/risco.
 Rode:  python app.py
 Abra:  http://localhost:5000
 """
-from flask import Flask, render_template, request, jsonify
+import os
+from flask import Flask, render_template, request, jsonify, session
 import model_engine as me
 import live_api
+import clv_tracker
+import tournament
+import agent as ag
 
 app = Flask(__name__)
+app.secret_key = os.urandom(24)
 
 
 def _api_key():
@@ -31,6 +36,7 @@ def model_info():
         "n_teams": len(m.teams),
         "home_adv": m.home_adv,
         "rho": m.rho,
+        "delta": m.delta,
         "converged": m.converged,
         "ref_date": str(m.ref_date.date()),
     })
@@ -55,6 +61,16 @@ def predict():
     if pred is None:
         return jsonify({"error": "Um dos times não está na base de treino do modelo."}), 400
     return jsonify(pred)
+
+
+@app.route("/api/markets", methods=["POST"])
+def markets():
+    d = request.get_json(force=True)
+    m = me.get_model()
+    result = m.compute_markets(d["home"], d["away"], bool(d.get("neutral", True)))
+    if result is None:
+        return jsonify({"error": "Um dos times não está na base do modelo."}), 400
+    return jsonify(result)
 
 
 @app.route("/api/value", methods=["POST"])
@@ -194,6 +210,131 @@ def _f(v):
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Blend modelo + odds de mercado
+# --------------------------------------------------------------------------- #
+@app.route("/api/blend", methods=["POST"])
+def blend():
+    """Mistura probabilidades do modelo com odds da casa (remove vig).
+
+    Body: { home, away, neutral, odd_H, odd_D, odd_A, alpha (0-1, default 0.6) }
+    """
+    d = request.get_json(force=True)
+    m = me.get_model()
+    pred = m.predict(d["home"], d["away"], bool(d.get("neutral", True)))
+    if pred is None:
+        return jsonify({"error": "Time não encontrado no modelo."}), 400
+    oh, od, oa = _f(d.get("odd_H")), _f(d.get("odd_D")), _f(d.get("odd_A"))
+    if not (oh and od and oa and oh > 1 and od > 1 and oa > 1):
+        return jsonify({"error": "Informe odd_H, odd_D e odd_A (decimais > 1)."}), 400
+    alpha = float(d.get("alpha", 0.6))
+    blended = me.blend_with_market(pred, oh, od, oa, alpha=alpha)
+    return jsonify({"pred": pred, "blended": blended})
+
+
+# --------------------------------------------------------------------------- #
+# Simulação de torneio Monte Carlo
+# --------------------------------------------------------------------------- #
+@app.route("/api/tournament")
+def tournament_sim():
+    """Simula a Copa 2026 completa via Monte Carlo.
+
+    Query params: n_sims (default 10000), seed (default 42)
+    """
+    n_sims = int(request.args.get("n_sims", 10000))
+    seed = int(request.args.get("seed", 42))
+    m = me.get_model()
+    result = tournament.simulate_tournament(m, n_sims=n_sims, seed=seed)
+    return jsonify(result)
+
+
+# --------------------------------------------------------------------------- #
+# CLV Tracker
+# --------------------------------------------------------------------------- #
+@app.route("/api/clv/add", methods=["POST"])
+def clv_add():
+    """Registra uma aposta. Body: { match, side, odds_entry, p_model?, stake?, note? }"""
+    d = request.get_json(force=True)
+    required = ["match", "side", "odds_entry"]
+    for k in required:
+        if not d.get(k):
+            return jsonify({"error": f"Campo obrigatório: {k}"}), 400
+    bet_id = clv_tracker.add_bet(
+        match=d["match"],
+        side=str(d["side"]).upper(),
+        odds_entry=float(d["odds_entry"]),
+        p_model=_f(d.get("p_model")),
+        stake=_f(d.get("stake")),
+        note=d.get("note", ""),
+    )
+    return jsonify({"ok": True, "id": bet_id})
+
+
+@app.route("/api/clv/update", methods=["POST"])
+def clv_update():
+    """Atualiza odds de fechamento e/ou resultado. Body: { id, odds_closing?, result? }"""
+    d = request.get_json(force=True)
+    bet_id = d.get("id")
+    if not bet_id:
+        return jsonify({"error": "Campo obrigatório: id"}), 400
+    clv_tracker.update_bet(
+        int(bet_id),
+        odds_closing=_f(d.get("odds_closing")),
+        result=d.get("result"),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/clv/bets")
+def clv_bets():
+    limit = int(request.args.get("limit", 100))
+    return jsonify({"bets": clv_tracker.get_bets(limit)})
+
+
+@app.route("/api/clv/stats")
+def clv_stats():
+    return jsonify(clv_tracker.get_clv_stats())
+
+
+@app.route("/api/clv/delete", methods=["POST"])
+def clv_delete():
+    d = request.get_json(force=True)
+    clv_tracker.delete_bet(int(d["id"]))
+    return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- #
+# Agente de IA
+# --------------------------------------------------------------------------- #
+_AGENT_HISTORIES = {}   # session_id -> history list (em memória, suficiente para Copa)
+
+@app.route("/api/agent", methods=["POST"])
+def agent_chat():
+    d = request.get_json(force=True)
+    msg = (d.get("message") or "").strip()
+    if not msg:
+        return jsonify({"error": "Mensagem vazia."}), 400
+    session_id = d.get("session_id", "default")
+    api_key = d.get("anthropic_key") or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "Informe sua ANTHROPIC_API_KEY no campo acima."}), 400
+
+    history = _AGENT_HISTORIES.get(session_id, [])
+    try:
+        result = ag.run_agent(msg, history=history, api_key=api_key)
+        _AGENT_HISTORIES[session_id] = result["history"][-20:]  # mantém últimas 10 trocas
+        return jsonify({"response": result["response"], "tools_used": result["tool_calls_made"]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/reset", methods=["POST"])
+def agent_reset():
+    d = request.get_json(force=True)
+    _AGENT_HISTORIES.pop(d.get("session_id", "default"), None)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

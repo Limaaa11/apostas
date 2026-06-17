@@ -51,6 +51,103 @@ async function init() {
   }
 }
 
+// ---------- Mercados ----------
+$("#m-go").onclick = async () => {
+  const home = $("#m-home").value.trim();
+  const away = $("#m-away").value.trim();
+  if (!home || !away) return toast("Preencha os dois times.", true);
+  $("#mercados-result").innerHTML = '<div class="card"><span class="spinner"></span> calculando mercados…</div>';
+  try {
+    const d = await api("/api/markets", { home, away, neutral: $("#m-neutral").checked });
+    renderMercados(d);
+  } catch (e) {
+    $("#mercados-result").innerHTML = "";
+    toast(e.message, true);
+  }
+};
+
+function renderMercados(d) {
+  const blocks = d.markets.map((mkt) => {
+    const rows = mkt.selections.map((s, idx) => {
+      const inputId = `odd-${mkt.market.replace(/\s+/g, "_")}-${idx}`;
+      return `<tr class="mkt-row" data-p="${s.p}" data-input="${inputId}">
+        <td class="sel-label">${s.label}</td>
+        <td class="pct-col"><b>${pct(s.p)}</b></td>
+        <td class="odd-col">
+          <span class="fair-odd">${s.odd_justa.toFixed(2)}</span>
+        </td>
+        <td class="odd-col">
+          <input class="odd-input" id="${inputId}" type="number" step="0.01" min="1.01"
+            placeholder="—" onchange="calcEV(this)" oninput="calcEV(this)">
+        </td>
+        <td class="ev-col" id="ev-${inputId}">—</td>
+        <td class="action-col" id="ac-${inputId}"></td>
+      </tr>`;
+    }).join("");
+
+    return `<div class="mkt-block">
+      <div class="mkt-header">${mkt.icon} <span>${mkt.market}</span></div>
+      <table class="mkt-table">
+        <thead><tr>
+          <th>Seleção</th>
+          <th>P(modelo)</th>
+          <th>Odd justa</th>
+          <th>Odd da casa</th>
+          <th>EV</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  const summary = `<div class="card mkt-summary">
+    <div class="match-head">
+      <span class="team">${d.home}</span>
+      <span style="color:var(--muted);font-size:13px">λ ${d.lam_h.toFixed(2)} — ${d.lam_a.toFixed(2)}</span>
+      <span class="team">${d.away}</span>
+    </div>
+    <p class="hint" style="margin:6px 0 0">
+      Cole as odds da casa na coluna <b>"Odd da casa"</b> para ver o EV instantaneamente.
+      Linhas verdes = valor positivo (aposta vantajosa).
+    </p>
+  </div>`;
+
+  $("#mercados-result").innerHTML = summary + `<div class="mkt-grid">${blocks}</div>`;
+}
+
+window.calcEV = function(input) {
+  const odd = parseFloat(input.value);
+  const row = input.closest("tr");
+  const p = parseFloat(row.dataset.p);
+  const inputId = row.dataset.input;
+  const evCell = document.getElementById("ev-" + inputId);
+  const acCell = document.getElementById("ac-" + inputId);
+
+  if (!odd || odd <= 1 || isNaN(p)) {
+    evCell.textContent = "—";
+    evCell.className = "ev-col";
+    row.classList.remove("row-value", "row-novalue");
+    acCell.innerHTML = "";
+    return;
+  }
+
+  const ev = p * odd - 1;
+  const evPct = (ev * 100).toFixed(1);
+  evCell.textContent = (ev >= 0 ? "+" : "") + evPct + "%";
+  evCell.className = "ev-col " + (ev > 0 ? "pos" : "neg");
+  row.classList.toggle("row-value",  ev > 0);
+  row.classList.toggle("row-novalue", ev <= 0);
+
+  if (ev > 0) {
+    const kelly = Math.max((odd * p - 1) / (odd - 1), 0);
+    const k4 = (kelly / 4 * 100).toFixed(1);
+    acCell.innerHTML = `<span class="badge good" title="1/4 Kelly sugerido">K¼ ${k4}%</span>`;
+  } else {
+    acCell.innerHTML = `<span class="badge bad">sem valor</span>`;
+  }
+};
+
 // ---------- Previsão ----------
 $("#p-go").onclick = async () => {
   const home = $("#p-home").value.trim();
@@ -594,3 +691,103 @@ async function loadRanking() {
 
 refreshKeyStatus();
 init();
+
+// ---------- Agente IA ----------
+const AGENT_SESSION = "copa2026_" + Math.random().toString(36).slice(2);
+
+function agKey() {
+  return localStorage.getItem("ag_key") || "";
+}
+
+$("#ag-save-key").onclick = () => {
+  const k = $("#ag-key").value.trim();
+  if (!k) return toast("Cole sua chave Anthropic.", true);
+  localStorage.setItem("ag_key", k);
+  $("#ag-key").value = "";
+  toast("Chave salva no navegador.");
+};
+
+$("#ag-reset").onclick = async () => {
+  await fetch("/api/agent/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: AGENT_SESSION }),
+  });
+  $("#agent-messages").innerHTML = `<div class="agent-msg system">
+    <div class="msg-bubble">Conversa reiniciada. Como posso ajudar?</div>
+  </div>`;
+};
+
+async function sendAgentMessage(text) {
+  const key = agKey() || $("#ag-key").value.trim();
+  if (!key) { toast("Salve sua chave Anthropic primeiro.", true); return; }
+
+  appendAgentMsg("user", text);
+  const thinking = appendAgentMsg("assistant", '<span class="spinner"></span> analisando…', true);
+
+  try {
+    const r = await fetch("/api/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, session_id: AGENT_SESSION, anthropic_key: key }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "Erro no agente");
+    thinking.remove();
+    appendAgentMsg("assistant", formatAgentResponse(d.response), false, d.tools_used);
+  } catch (e) {
+    thinking.remove();
+    appendAgentMsg("assistant", "❌ " + e.message);
+    toast(e.message, true);
+  }
+}
+
+function appendAgentMsg(role, html, temp = false, tools = []) {
+  const wrap = document.createElement("div");
+  wrap.className = `agent-msg ${role}${temp ? " temp" : ""}`;
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.innerHTML = html;
+  wrap.appendChild(bubble);
+  if (tools && tools.length) {
+    const t = document.createElement("div");
+    t.className = "msg-tools";
+    t.textContent = "🔧 " + tools.join(" · ");
+    wrap.appendChild(t);
+  }
+  $("#agent-messages").appendChild(wrap);
+  wrap.scrollIntoView({ behavior: "smooth", block: "end" });
+  return wrap;
+}
+
+function formatAgentResponse(text) {
+  // Converte markdown básico para HTML
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\*(.+?)\*/g, "<i>$1</i>")
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/^#{1,3} (.+)$/gm, "<b style='font-size:15px'>$1</b>")
+    .replace(/^- (.+)$/gm, "• $1")
+    .replace(/\n\n/g, "<br><br>")
+    .replace(/\n/g, "<br>");
+}
+
+$("#ag-send").onclick = () => {
+  const msg = $("#ag-input").value.trim();
+  if (!msg) return;
+  $("#ag-input").value = "";
+  sendAgentMessage(msg);
+};
+
+$("#ag-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $("#ag-send").click();
+  }
+});
+
+window.sendExample = (btn) => {
+  $("#ag-input").value = btn.textContent;
+  document.querySelector('[data-tab="agente"]').click();
+  setTimeout(() => $("#ag-send").click(), 100);
+};
