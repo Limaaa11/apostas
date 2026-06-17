@@ -14,3 +14,8 @@ Press CTRL+C to quit
 127.0.0.1 - - [17/Jun/2026 00:44:03] "GET /api/teams HTTP/1.1" 200 -
 127.0.0.1 - - [17/Jun/2026 00:45:15] "POST /api/agent HTTP/1.1" 200 -
 127.0.0.1 - - [17/Jun/2026 00:48:28] "GET /api/live?only_known=1 HTTP/1.1" 200 -
+127.0.0.1 - - [17/Jun/2026 02:25:35] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/Jun/2026 02:25:36] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [17/Jun/2026 02:25:36] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [17/Jun/2026 02:25:36] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [17/Jun/2026 02:25:39] "GET /api/ranking HTTP/1.1" 200 -
