@@ -9,8 +9,10 @@ Tudo aqui é determinístico e cacheado em disco (params.pkl) para o front-end
 responder rápido sem re-treinar a cada request.
 """
 import os
+import time
 import pickle
 import hashlib
+import threading
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -50,7 +52,7 @@ def _should_refresh_data():
     """Retorna True se o CSV está ausente ou mais velho que DATA_MAX_AGE_HOURS."""
     if not os.path.exists(DATA_PATH):
         return True
-    age_hours = (os.path.getmtime(DATA_PATH) - __import__("time").time()) * -1 / 3600
+    age_hours = (time.time() - os.path.getmtime(DATA_PATH)) / 3600
     return age_hours > DATA_MAX_AGE_HOURS
 
 
@@ -290,12 +292,9 @@ class Model:
         lam_a_2t = lam_a * 0.55
 
         maxg_ht = 6
-        M_ht = np.zeros((maxg_ht, maxg_ht))
-        M_2t = np.zeros((maxg_ht, maxg_ht))
-        for i in range(maxg_ht):
-            for j in range(maxg_ht):
-                M_ht[i, j] = poisson.pmf(i, lam_h_ht) * poisson.pmf(j, lam_a_ht)
-                M_2t[i, j] = poisson.pmf(i, lam_h_2t) * poisson.pmf(j, lam_a_2t)
+        idx_ht = np.arange(maxg_ht)
+        M_ht = np.outer(poisson.pmf(idx_ht, lam_h_ht), poisson.pmf(idx_ht, lam_a_ht))
+        M_2t = np.outer(poisson.pmf(idx_ht, lam_h_2t), poisson.pmf(idx_ht, lam_a_2t))
         M_ht /= max(M_ht.sum(), 1e-10)
         M_2t /= max(M_2t.sum(), 1e-10)
 
@@ -526,33 +525,44 @@ class Model:
         return rows[:top]
 
 
+CACHE_VERSION = 3   # incrementar quando o schema do blob mudar
+
 _MODEL = None
+_MODEL_LOCK = threading.Lock()
 
 
 def get_model(force=False):
-    """Carrega o modelo do cache; treina e cacheia se necessário."""
+    """Carrega o modelo do cache; treina e cacheia se necessário.
+
+    Thread-safe: double-checked locking garante que apenas um thread treina
+    enquanto os demais aguardam o resultado.
+    """
     global _MODEL
     if _MODEL is not None and not force:
         return _MODEL
 
-    df = load_data()
-    sig = _data_signature(df)
+    with _MODEL_LOCK:
+        if _MODEL is not None and not force:   # segunda verificação dentro do lock
+            return _MODEL
 
-    if not force and os.path.exists(CACHE_PATH):
-        try:
-            with open(CACHE_PATH, "rb") as f:
-                blob = pickle.load(f)
-            if blob.get("sig") == sig:
-                _MODEL = Model(blob["params"], blob["home_adv"], blob["rho"],
-                               blob.get("delta", 0.0),
-                               blob["elo"], blob["ref_date"], blob["n_train"],
-                               blob["converged"])
-                return _MODEL
-        except Exception:
-            pass
+        df = load_data()
+        sig = _data_signature(df)
 
-    _MODEL = _train_and_cache(df, sig)
-    return _MODEL
+        if not force and os.path.exists(CACHE_PATH):
+            try:
+                with open(CACHE_PATH, "rb") as f:
+                    blob = pickle.load(f)
+                if blob.get("sig") == sig and blob.get("version") == CACHE_VERSION:
+                    _MODEL = Model(blob["params"], blob["home_adv"], blob["rho"],
+                                   blob.get("delta", 0.0),
+                                   blob["elo"], blob["ref_date"], blob["n_train"],
+                                   blob["converged"])
+                    return _MODEL
+            except Exception:
+                pass
+
+        _MODEL = _train_and_cache(df, sig)
+        return _MODEL
 
 
 def _train_and_cache(df, sig):
@@ -562,6 +572,7 @@ def _train_and_cache(df, sig):
     elo = compute_elo(df.sort_values("date"))  # ELO sobre toda a história
     with open(CACHE_PATH, "wb") as f:
         pickle.dump({
+            "version": CACHE_VERSION,
             "sig": sig, "params": params, "home_adv": ha, "rho": rho,
             "delta": delta, "elo": elo, "ref_date": ref_date,
             "n_train": len(train_full), "converged": bool(res.success),

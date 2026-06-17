@@ -516,7 +516,7 @@ function downloadFile(name, content) {
   a.href = URL.createObjectURL(blob);
   a.download = name;
   a.click();
-  URL.revokeObjectURL(a.href);
+  setTimeout(() => URL.revokeObjectURL(a.href), 100);
 }
 
 $("#b-csv-template").onclick = (e) => {
@@ -775,8 +775,13 @@ function appendAgentMsg(role, html, temp = false, tools = []) {
 }
 
 function formatAgentResponse(text) {
-  // Converte markdown básico para HTML
-  return text
+  // Escapa HTML antes de processar markdown para evitar XSS
+  const safe = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return safe
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/\*(.+?)\*/g, "<i>$1</i>")
     .replace(/`(.+?)`/g, "<code>$1</code>")

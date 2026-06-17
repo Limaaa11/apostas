@@ -124,11 +124,11 @@ def _sim_group(model, teams, rng):
 # --------------------------------------------------------------------------- #
 # Seleção dos 8 melhores terceiros
 # --------------------------------------------------------------------------- #
-def _best_third(thirds):
+def _best_third(thirds, rng):
     """Seleciona os 8 melhores terceiros colocados entre os 12 grupos."""
     thirds_sorted = sorted(
         thirds,
-        key=lambda t: (t["pts"], t["gd"], t["gf"], np.random.random()),
+        key=lambda t: (t["pts"], t["gd"], t["gf"], rng.random()),
         reverse=True,
     )
     return [t["team"] for t in thirds_sorted[:8]]
@@ -150,21 +150,6 @@ def _sim_knockout_match(model, team_a, team_b, rng):
         elo_b = model.elo.get(team_b, 1500)
         p_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
         return team_a if rng.random() < p_a else team_b
-
-
-def _sim_bracket(model, field, rng):
-    """Simula um chaveamento de 32 times até o campeão."""
-    # Semeia pelo ELO: 1 vs 32, 2 vs 31, ...
-    seeded = sorted(field, key=lambda t: model.elo.get(t, 1500), reverse=True)
-    n = len(seeded)
-    while n > 1:
-        next_round = []
-        for i in range(n // 2):
-            winner = _sim_knockout_match(model, seeded[i], seeded[n - 1 - i], rng)
-            next_round.append(winner)
-        seeded = next_round
-        n = len(seeded)
-    return seeded[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -201,7 +186,7 @@ def simulate_tournament(model, n_sims=10000, seed=42):
             runners_up.append(standing[1]["team"])
             thirds.append(standing[2])
 
-        best8_thirds = _best_third(thirds)
+        best8_thirds = _best_third(thirds, rng)
         field = winners + runners_up + best8_thirds  # 12+12+8 = 32
 
         for t in field:

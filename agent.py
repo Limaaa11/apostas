@@ -10,8 +10,6 @@ import anthropic
 import model_engine as me
 import tournament as trn
 
-CLIENT = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-
 MODEL = "claude-haiku-4-5-20251001"   # rápido e barato para uso em chat
 
 SYSTEM_PROMPT = """Você é um analista especialista em apostas esportivas para a Copa do Mundo 2026.
@@ -204,9 +202,10 @@ def run_agent(user_message, history=None, api_key=None):
     history: lista de mensagens anteriores [{"role": ..., "content": ...}]
     api_key: chave ANTHROPIC_API_KEY (usa env var se não fornecida)
     """
-    client = CLIENT
-    if api_key:
-        client = anthropic.Anthropic(api_key=api_key)
+    resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not resolved_key:
+        raise ValueError("ANTHROPIC_API_KEY não fornecida.")
+    client = anthropic.Anthropic(api_key=resolved_key)
 
     messages = list(history or [])
     messages.append({"role": "user", "content": user_message})

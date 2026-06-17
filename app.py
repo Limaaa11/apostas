@@ -308,10 +308,22 @@ def clv_delete():
 # --------------------------------------------------------------------------- #
 # Agente de IA
 # --------------------------------------------------------------------------- #
-_AGENT_HISTORIES = {}   # session_id -> history list (em memória, suficiente para Copa)
+_AGENT_HISTORIES = {}        # session_id -> (last_ts, history)
+_SESSION_TTL = 3600          # expira sessão após 1 hora de inatividade
+
+
+def _clean_agent_sessions():
+    now = os.times().elapsed if hasattr(os, "times") else 0
+    import time as _t
+    now = _t.time()
+    stale = [k for k, (ts, _) in _AGENT_HISTORIES.items() if now - ts > _SESSION_TTL]
+    for k in stale:
+        del _AGENT_HISTORIES[k]
+
 
 @app.route("/api/agent", methods=["POST"])
 def agent_chat():
+    import time as _t
     d = request.get_json(force=True)
     msg = (d.get("message") or "").strip()
     if not msg:
@@ -321,19 +333,25 @@ def agent_chat():
     if not api_key:
         return jsonify({"error": "Informe sua ANTHROPIC_API_KEY no campo acima."}), 400
 
-    history = _AGENT_HISTORIES.get(session_id, [])
+    _clean_agent_sessions()
+    _, history = _AGENT_HISTORIES.get(session_id, (_t.time(), []))
     try:
         result = ag.run_agent(msg, history=history, api_key=api_key)
-        _AGENT_HISTORIES[session_id] = result["history"][-20:]  # mantém últimas 10 trocas
+        _AGENT_HISTORIES[session_id] = (_t.time(), result["history"][-20:])
         return jsonify({"response": result["response"], "tools_used": result["tool_calls_made"]})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Não expõe detalhes internos (pode conter a chave em AuthenticationError)
+        msg_safe = "Chave inválida ou sem saldo." if "auth" in str(e).lower() else "Erro interno no agente."
+        return jsonify({"error": msg_safe}), 500
 
 
 @app.route("/api/agent/reset", methods=["POST"])
 def agent_reset():
     d = request.get_json(force=True)
-    _AGENT_HISTORIES.pop(d.get("session_id", "default"), None)
+    sid = d.get("session_id", "default")
+    _AGENT_HISTORIES.pop(sid, None)
     return jsonify({"ok": True})
 
 

@@ -10,6 +10,7 @@ CLV% = (odd_entrada / odd_fechamento - 1) * 100
 """
 import os
 import sqlite3
+import statistics
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clv_tracker.db")
@@ -135,7 +136,6 @@ def get_clv_stats():
     n_settled = n_win + n_loss
     win_rate = n_win / n_settled if n_settled else None
 
-    import statistics
     stats = {
         "ok": True,
         "n_total": len(bets),
