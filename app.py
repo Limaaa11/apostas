@@ -17,9 +17,11 @@ Melhorias v2:
 import os
 import time
 import json
+import pickle
 import logging
 import secrets
 from pathlib import Path
+import pandas as pd
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -128,7 +130,7 @@ def model_info():
 @limiter.limit("30 per minute")
 def teams():
     m = me.get_model()
-    team_list = sorted(m.teams) if hasattr(m.teams, "__iter__") else []
+    team_list = list(m.teams) if hasattr(m.teams, "__iter__") else []
     return jsonify({
         "teams": team_list,
         "n_teams": len(team_list),
@@ -141,17 +143,7 @@ def teams():
 def ranking():
     top = int(request.args.get("top", 50))
     m = me.get_model()
-    teams_data = []
-    for team in m.teams:
-        row = m._p.loc[team] if hasattr(m, "_p") else {}
-        teams_data.append({
-            "team": team,
-            "elo": m.elo.get(team, 1500),
-            "attack": float(row["attack"]) if hasattr(row, "__getitem__") and "attack" in row else None,
-            "defense": float(row["defense"]) if hasattr(row, "__getitem__") and "defense" in row else None,
-        })
-    teams_data.sort(key=lambda x: -(x["elo"] or 0))
-    return jsonify({"ranking": teams_data[:top]})
+    return jsonify({"ranking": m.ranking(top=top)})
 
 
 @app.route("/api/predict", methods=["POST"])
@@ -574,7 +566,6 @@ def ml_status():
     if not os.path.exists(cache_path):
         return jsonify({"trained": False, "message": "Modelo ML não treinado ainda."})
     try:
-        import pickle
         with open(cache_path, "rb") as f:
             blob = pickle.load(f)
         if blob.get("version") == ml.ML_CACHE_VERSION:
@@ -667,7 +658,6 @@ def ml_backtest():
     flat_pct_raw = request.args.get("flat_stake_pct")
     flat_pct = float(flat_pct_raw) if flat_pct_raw else None
     try:
-        import pandas as pd
         m = ml.get_ml_model()
         df = pd.read_csv(ml.DATA_PATH, parse_dates=["date"])
         feat_df = ml.build_features(df)

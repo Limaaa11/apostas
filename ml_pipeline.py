@@ -396,8 +396,6 @@ def financial_backtest(feat_df: pd.DataFrame, model: "MLBettingModel",
         if len(np.unique(y_tr)) < 3:
             continue
 
-        import xgboost as xgb
-        from sklearn.calibration import CalibratedClassifierCV
         fold_model = CalibratedClassifierCV(
             xgb.XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
                                subsample=0.8, colsample_bytree=0.8,
