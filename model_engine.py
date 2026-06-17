@@ -216,10 +216,15 @@ class Model:
 
     @staticmethod
     def _goal_totals(M):
-        """Distribuição de totais de gols via convolução das marginais (vetorizado)."""
-        h_marg = M.sum(axis=1)
-        a_marg = M.sum(axis=0)
-        return np.convolve(h_marg, a_marg)
+        """Distribuição P(total=k) = sum_{x+y=k} M[x,y] — soma anti-diagonal vetorizada.
+
+        Não usa convolução das marginais porque o DC cria correlação entre
+        placares (0-0, 0-1, 1-0, 1-1 são ajustados por rho), tornando
+        home_goals e away_goals estatisticamente dependentes.
+        """
+        n = M.shape[0]
+        xi, yi = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+        return np.bincount((xi + yi).ravel(), weights=M.ravel(), minlength=2 * n - 1)
 
     def predict(self, home, away, neutral=True):
         if not (self.has(home) and self.has(away)):

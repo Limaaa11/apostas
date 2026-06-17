@@ -1,0 +1,4 @@
+Carregando modelo (treina na 1ª vez, depois usa cache)...
+Pronto! Abra http://localhost:5000
+ * Serving Flask app 'app'
+ * Debug mode: off
