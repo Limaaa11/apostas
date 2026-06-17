@@ -277,20 +277,98 @@ class Model:
             p = max(min(float(p), 0.9999), 0.0001)
             return {"label": label, "p": round(p, 4), "odd_justa": round(1.0 / p, 2)}
 
+        def pois_ov(lam, k):
+            return float(1.0 - poisson.cdf(k, lam))
+
+        def pois_un(lam, k):
+            return float(poisson.cdf(k, lam))
+
+        # ---- 1º e 2º Tempo (WC: ~45% dos gols no 1T, 55% no 2T) ----
+        lam_h_ht = lam_h * 0.45
+        lam_a_ht = lam_a * 0.45
+        lam_h_2t = lam_h * 0.55
+        lam_a_2t = lam_a * 0.55
+
+        maxg_ht = 6
+        M_ht = np.zeros((maxg_ht, maxg_ht))
+        M_2t = np.zeros((maxg_ht, maxg_ht))
+        for i in range(maxg_ht):
+            for j in range(maxg_ht):
+                M_ht[i, j] = poisson.pmf(i, lam_h_ht) * poisson.pmf(j, lam_a_ht)
+                M_2t[i, j] = poisson.pmf(i, lam_h_2t) * poisson.pmf(j, lam_a_2t)
+        M_ht /= max(M_ht.sum(), 1e-10)
+        M_2t /= max(M_2t.sum(), 1e-10)
+
+        p_ht_H = float(np.tril(M_ht, -1).sum())
+        p_ht_D = float(np.trace(M_ht))
+        p_ht_A = float(np.triu(M_ht, 1).sum())
+
+        tot_ht = np.zeros(2 * maxg_ht)
+        tot_2t = np.zeros(2 * maxg_ht)
+        home_goals_2t = np.zeros(maxg_ht)
+        away_goals_2t = np.zeros(maxg_ht)
+        for x in range(maxg_ht):
+            home_goals_2t[x] = float(M_2t[x, :].sum())
+            away_goals_2t[x] = float(M_2t[:, x].sum())
+            for y in range(maxg_ht):
+                tot_ht[x + y] += M_ht[x, y]
+                tot_2t[x + y] += M_2t[x, y]
+
+        btts = float(M[1:, 1:].sum())
+        btts_ht = float(M_ht[1:, 1:].sum())
+
+        # ---- Próximo Gol (processos de Poisson competindo) ----
+        p_no_goal = float(M[0, 0])
+        total_rate = lam_h + lam_a
+        p_home_first = (1 - p_no_goal) * lam_h / total_rate if total_rate > 0 else 0.0
+        p_away_first = (1 - p_no_goal) * lam_a / total_rate if total_rate > 0 else 0.0
+
+        # ---- Mercados estatísticos calibrados em Copa do Mundo (Poisson) ----
+        # Médias WC: corners≈9.7 | cartões≈3.1 | chutes≈25.5 | SOT≈8.5 | impedimentos≈3.5
+        MEAN_GOALS_WC = 2.6
+        intensity = (lam_h + lam_a) / MEAN_GOALS_WC
+
+        corner_rate = 9.7 * (intensity ** 0.6)
+        corner_h = corner_rate * lam_h / total_rate if total_rate > 0 else corner_rate / 2
+        corner_a = corner_rate - corner_h
+
+        tension = max(0.0, 1.0 - abs(p_H - p_A))   # 0=desigual → 1=equilibrado → mais cartões
+        card_rate = 3.1 * (0.8 + 0.4 * tension)
+
+        lam_mean = MEAN_GOALS_WC / 2
+        shot_h = 12.75 * ((lam_h / lam_mean) ** 0.65)
+        shot_a = 12.75 * ((lam_a / lam_mean) ** 0.65)
+        shot_rate = shot_h + shot_a
+
+        sot_h = 4.25 * ((lam_h / lam_mean) ** 0.65)
+        sot_a = 4.25 * ((lam_a / lam_mean) ** 0.65)
+        sot_rate = sot_h + sot_a
+
+        offside_h = 1.75 * ((lam_h / lam_mean) ** 0.5)
+        offside_a = 1.75 * ((lam_a / lam_mean) ** 0.5)
+        offside_rate = offside_h + offside_a
+
         markets = [
+            # ── Resultado e variantes ────────────────────────────────────────
             {"market": "Resultado Final (1X2)", "icon": "⚽", "selections": [
                 sel(f"{home} vence (1)", p_H),
                 sel("Empate (X)", p_D),
                 sel(f"{away} vence (2)", p_A),
             ]},
-            {"market": "Dupla Chance", "icon": "🎯", "selections": [
+            {"market": "Dupla Chance", "icon": "2️⃣", "selections": [
                 sel(f"1X — {home} ou Empate", p_H + p_D),
                 sel(f"12 — {home} ou {away}", p_H + p_A),
                 sel(f"X2 — Empate ou {away}", p_D + p_A),
             ]},
-            {"market": "Ambas as Equipes Marcam", "icon": "🥅", "selections": [
-                sel("Sim", float(M[1:, 1:].sum())),
-                sel("Não", float(1 - M[1:, 1:].sum())),
+            {"market": "Próximo Gol", "icon": "🎯", "selections": [
+                sel(f"{home} marca primeiro", p_home_first),
+                sel("Nenhum gol no jogo", p_no_goal),
+                sel(f"{away} marca primeiro", p_away_first),
+            ]},
+            # ── Gols — Partido inteiro ───────────────────────────────────────
+            {"market": "Ambas as Equipes Marcam (BTTS)", "icon": "🥅", "selections": [
+                sel("Sim", btts),
+                sel("Não", 1 - btts),
             ]},
             {"market": "Total de Gols", "icon": "📊", "selections": [
                 sel("Over 0.5", ov(tot, 0)), sel("Under 0.5", un(tot, 0)),
@@ -309,14 +387,131 @@ class Model:
                 sel("Over 1.5", ov(away_goals, 1)), sel("Under 1.5", un(away_goals, 1)),
                 sel("Over 2.5", ov(away_goals, 2)), sel("Under 2.5", un(away_goals, 2)),
             ]},
+            # ── 1º Tempo ─────────────────────────────────────────────────────
+            {"market": "Resultado 1º Tempo", "icon": "🕐",
+             "note": "Aprox: 45% dos gols esperados na 1ª parte", "selections": [
+                sel(f"{home} vence no HT", p_ht_H),
+                sel("Empate no HT", p_ht_D),
+                sel(f"{away} vence no HT", p_ht_A),
+            ]},
+            {"market": "Total de Gols — 1º Tempo", "icon": "🕐",
+             "note": "Aproximação probabilística", "selections": [
+                sel("Over 0.5", ov(tot_ht, 0)), sel("Under 0.5", un(tot_ht, 0)),
+                sel("Over 1.5", ov(tot_ht, 1)), sel("Under 1.5", un(tot_ht, 1)),
+                sel("Over 2.5", ov(tot_ht, 2)), sel("Under 2.5", un(tot_ht, 2)),
+            ]},
+            {"market": "Ambas Marcam no 1º Tempo", "icon": "🕐",
+             "note": "Aproximação probabilística", "selections": [
+                sel("Sim", btts_ht),
+                sel("Não", 1 - btts_ht),
+            ]},
+            # ── 2º Tempo ─────────────────────────────────────────────────────
+            {"market": "Total de Gols — 2º Tempo", "icon": "🕑",
+             "note": "Aprox: 55% dos gols esperados no 2T", "selections": [
+                sel("Over 0.5", ov(tot_2t, 0)), sel("Under 0.5", un(tot_2t, 0)),
+                sel("Over 1.5", ov(tot_2t, 1)), sel("Under 1.5", un(tot_2t, 1)),
+                sel("Over 2.5", ov(tot_2t, 2)), sel("Under 2.5", un(tot_2t, 2)),
+            ]},
+            {"market": "Time a Marcar no 2º Tempo", "icon": "🕑",
+             "note": "Aproximação probabilística", "selections": [
+                sel(f"{home} marca no 2T", ov(home_goals_2t, 0)),
+                sel(f"{away} marca no 2T", ov(away_goals_2t, 0)),
+                sel("Ambas marcam no 2T", float(M_2t[1:, 1:].sum())),
+                sel("Nenhuma marca no 2T", float(M_2t[0, 0])),
+            ]},
+            # ── Escanteios ───────────────────────────────────────────────────
+            {"market": "Escanteios — Total", "icon": "🚩",
+             "note": f"Modelo estatístico · λ≈{corner_rate:.1f} (média WC = 9.7)", "selections": [
+                sel("Over 7.5", pois_ov(corner_rate, 7)),
+                sel("Over 8.5", pois_ov(corner_rate, 8)),
+                sel("Over 9.5", pois_ov(corner_rate, 9)),
+                sel("Over 10.5", pois_ov(corner_rate, 10)),
+                sel("Under 8.5", pois_un(corner_rate, 8)),
+                sel("Under 9.5", pois_un(corner_rate, 9)),
+                sel("Under 10.5", pois_un(corner_rate, 10)),
+                sel("Under 11.5", pois_un(corner_rate, 11)),
+            ]},
+            {"market": f"Escanteios — {home}", "icon": "🚩",
+             "note": "Modelo estatístico", "selections": [
+                sel("Over 3.5", pois_ov(corner_h, 3)),
+                sel("Over 4.5", pois_ov(corner_h, 4)),
+                sel("Over 5.5", pois_ov(corner_h, 5)),
+                sel("Under 4.5", pois_un(corner_h, 4)),
+                sel("Under 5.5", pois_un(corner_h, 5)),
+            ]},
+            {"market": f"Escanteios — {away}", "icon": "🚩",
+             "note": "Modelo estatístico", "selections": [
+                sel("Over 3.5", pois_ov(corner_a, 3)),
+                sel("Over 4.5", pois_ov(corner_a, 4)),
+                sel("Over 5.5", pois_ov(corner_a, 5)),
+                sel("Under 4.5", pois_un(corner_a, 4)),
+                sel("Under 5.5", pois_un(corner_a, 5)),
+            ]},
+            # ── Cartões ──────────────────────────────────────────────────────
+            {"market": "Cartões — Total", "icon": "🟨",
+             "note": f"Modelo estatístico · λ≈{card_rate:.2f} (média WC = 3.1; maior em jogos equilibrados)", "selections": [
+                sel("Over 1.5", pois_ov(card_rate, 1)),
+                sel("Over 2.5", pois_ov(card_rate, 2)),
+                sel("Over 3.5", pois_ov(card_rate, 3)),
+                sel("Over 4.5", pois_ov(card_rate, 4)),
+                sel("Under 2.5", pois_un(card_rate, 2)),
+                sel("Under 3.5", pois_un(card_rate, 3)),
+                sel("Under 4.5", pois_un(card_rate, 4)),
+            ]},
+            # ── Chutes ───────────────────────────────────────────────────────
+            {"market": "Total de Chutes", "icon": "👟",
+             "note": f"Modelo estatístico · λ≈{shot_rate:.1f} (média WC = 25.5)", "selections": [
+                sel("Over 20.5", pois_ov(shot_rate, 20)),
+                sel("Over 22.5", pois_ov(shot_rate, 22)),
+                sel("Over 24.5", pois_ov(shot_rate, 24)),
+                sel("Over 26.5", pois_ov(shot_rate, 26)),
+                sel("Under 22.5", pois_un(shot_rate, 22)),
+                sel("Under 24.5", pois_un(shot_rate, 24)),
+                sel("Under 26.5", pois_un(shot_rate, 26)),
+            ]},
+            {"market": "Total de Chutes ao Gol", "icon": "🎯",
+             "note": f"Modelo estatístico · λ≈{sot_rate:.1f} (média WC = 8.5)", "selections": [
+                sel("Over 6.5", pois_ov(sot_rate, 6)),
+                sel("Over 7.5", pois_ov(sot_rate, 7)),
+                sel("Over 8.5", pois_ov(sot_rate, 8)),
+                sel("Over 9.5", pois_ov(sot_rate, 9)),
+                sel("Under 7.5", pois_un(sot_rate, 7)),
+                sel("Under 8.5", pois_un(sot_rate, 8)),
+                sel("Under 9.5", pois_un(sot_rate, 9)),
+            ]},
+            # ── Impedimentos ─────────────────────────────────────────────────
+            {"market": "Total de Impedimentos", "icon": "🚫",
+             "note": f"Modelo estatístico · λ≈{offside_rate:.1f} (média WC = 3.5)", "selections": [
+                sel("Over 1.5", pois_ov(offside_rate, 1)),
+                sel("Over 2.5", pois_ov(offside_rate, 2)),
+                sel("Over 3.5", pois_ov(offside_rate, 3)),
+                sel("Over 4.5", pois_ov(offside_rate, 4)),
+                sel("Under 2.5", pois_un(offside_rate, 2)),
+                sel("Under 3.5", pois_un(offside_rate, 3)),
+                sel("Under 4.5", pois_un(offside_rate, 4)),
+            ]},
+            # ── Resultado Exato ──────────────────────────────────────────────
             {"market": "Resultado Exato (top 10)", "icon": "🎲", "selections": sorted(
                 [sel(f"{x}-{y}", float(M[x, y]))
                  for x in range(min(n, 7)) for y in range(min(n, 7))],
                 key=lambda s: -s["p"]
             )[:10]},
         ]
-        return {"home": home, "away": away, "markets": markets,
-                "lam_h": round(float(lam_h), 3), "lam_a": round(float(lam_a), 3)}
+
+        return {
+            "home": home, "away": away, "markets": markets,
+            "lam_h": round(float(lam_h), 3),
+            "lam_a": round(float(lam_a), 3),
+            "corner_rate": round(corner_rate, 1),
+            "card_rate": round(card_rate, 2),
+            "shot_rate": round(shot_rate, 1),
+            "sot_rate": round(sot_rate, 1),
+            "offside_rate": round(offside_rate, 1),
+            "disclaimer_jogador": (
+                "Mercados de jogador (marcar gol, chutes individuais, cartão por jogador) "
+                "requerem dados de elenco e minutos jogados — fora do escopo do modelo coletivo de seleções."
+            ),
+        }
 
     def ranking(self, top=30):
         rows = []

@@ -44,7 +44,7 @@ TOOLS = [
     },
     {
         "name": "ver_mercados",
-        "description": "Retorna probabilidades do modelo para TODOS os mercados disponíveis: 1X2, dupla chance, BTTS, over/under por gols totais e por equipe, resultado exato. Use quando o usuário fornecer odds da casa para comparar EV.",
+        "description": "Retorna probabilidades do modelo para TODOS os 20 mercados disponíveis: 1X2, próximo gol, dupla chance, BTTS, over/under gols (total/casa/fora), resultado 1º tempo, gols 1T/2T, ambas marcam 1T, time a marcar no 2T, escanteios (total/por equipe), cartões, total de chutes, total de chutes ao gol, impedimentos, resultado exato. Use sempre que o usuário perguntar sobre mercados ou fornecer odds da casa para calcular EV.",
         "input_schema": {
             "type": "object",
             "properties": {

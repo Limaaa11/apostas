@@ -68,14 +68,16 @@ $("#m-go").onclick = async () => {
 
 function renderMercados(d) {
   const blocks = d.markets.map((mkt) => {
+    const noteHtml = mkt.note
+      ? `<div class="mkt-note">⚙️ ${mkt.note}</div>`
+      : "";
+
     const rows = mkt.selections.map((s, idx) => {
-      const inputId = `odd-${mkt.market.replace(/\s+/g, "_")}-${idx}`;
+      const inputId = `odd-${mkt.market.replace(/[^\w]/g, "_")}-${idx}`;
       return `<tr class="mkt-row" data-p="${s.p}" data-input="${inputId}">
         <td class="sel-label">${s.label}</td>
         <td class="pct-col"><b>${pct(s.p)}</b></td>
-        <td class="odd-col">
-          <span class="fair-odd">${s.odd_justa.toFixed(2)}</span>
-        </td>
+        <td class="odd-col"><span class="fair-odd">${s.odd_justa.toFixed(2)}</span></td>
         <td class="odd-col">
           <input class="odd-input" id="${inputId}" type="number" step="0.01" min="1.01"
             placeholder="—" onchange="calcEV(this)" oninput="calcEV(this)">
@@ -87,30 +89,42 @@ function renderMercados(d) {
 
     return `<div class="mkt-block">
       <div class="mkt-header">${mkt.icon} <span>${mkt.market}</span></div>
+      ${noteHtml}
       <table class="mkt-table">
         <thead><tr>
-          <th>Seleção</th>
-          <th>P(modelo)</th>
-          <th>Odd justa</th>
-          <th>Odd da casa</th>
-          <th>EV</th>
-          <th></th>
+          <th>Seleção</th><th>P(modelo)</th><th>Odd justa</th><th>Odd da casa</th><th>EV</th><th></th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
   }).join("");
 
+  const rates = d.corner_rate != null ? `
+    <div class="mkt-rates">
+      <span>🚩 Escanteios esperados: <b>${d.corner_rate}</b></span>
+      <span>🟨 Cartões esperados: <b>${d.card_rate}</b></span>
+      <span>👟 Chutes esperados: <b>${d.shot_rate}</b></span>
+      <span>🎯 Chutes ao gol: <b>${d.sot_rate}</b></span>
+      <span>🚫 Impedimentos: <b>${d.offside_rate}</b></span>
+    </div>` : "";
+
+  const disclaimer = d.disclaimer_jogador
+    ? `<div class="mkt-disclaimer">⚠️ ${d.disclaimer_jogador}</div>` : "";
+
   const summary = `<div class="card mkt-summary">
     <div class="match-head">
       <span class="team">${d.home}</span>
-      <span style="color:var(--muted);font-size:13px">λ ${d.lam_h.toFixed(2)} — ${d.lam_a.toFixed(2)}</span>
+      <span style="color:var(--muted);font-size:13px">
+        xG ${d.lam_h.toFixed(2)} — ${d.lam_a.toFixed(2)}
+      </span>
       <span class="team">${d.away}</span>
     </div>
-    <p class="hint" style="margin:6px 0 0">
+    ${rates}
+    <p class="hint" style="margin:8px 0 0">
       Cole as odds da casa na coluna <b>"Odd da casa"</b> para ver o EV instantaneamente.
-      Linhas verdes = valor positivo (aposta vantajosa).
+      Linhas verdes = valor positivo. Mercados com ⚙️ usam modelo estatístico calibrado em dados de Copa.
     </p>
+    ${disclaimer}
   </div>`;
 
   $("#mercados-result").innerHTML = summary + `<div class="mkt-grid">${blocks}</div>`;
