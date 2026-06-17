@@ -1,814 +1,1226 @@
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
-const pct = (x) => (x * 100).toFixed(1) + "%";
-const money = (x) => x.toFixed(2);
+"use strict";
+/* =========================================================
+   app.js — Copa 2026 Betting Model
+   ========================================================= */
 
+// ── XSS helper ──────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// ── Toast ────────────────────────────────────────────────────
+function toast(msg, dur = 3000) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("visible");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("visible"), dur);
+}
+
+// ── Fetch helpers ────────────────────────────────────────────
 async function api(path, body) {
-  const opt = body
+  const opts = body != null
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    : {};
-  const r = await fetch(path, opt);
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || "Erro no servidor");
-  return data;
+    : { method: "GET" };
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }
 
-function toast(msg, isErr) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "toast show" + (isErr ? " err" : "");
-  setTimeout(() => (t.className = "toast"), 3200);
+// ── Formatters ───────────────────────────────────────────────
+const pct = (v) => (v == null ? "—" : (v * 100).toFixed(1) + "%");
+const odds = (p) => (p > 0 ? (1 / p).toFixed(2) : "—");
+const ev = (p, o) => (p && o ? ((p * o - 1) * 100).toFixed(1) + "%" : "—");
+const evNum = (p, o) => (p && o ? p * o - 1 : null);
+
+function evBadge(p, o) {
+  const v = evNum(p, o);
+  if (v == null) return "";
+  const cls = v > 0.03 ? "ev-pos" : v > 0 ? "ev-slight" : "ev-neg";
+  return `<span class="ev-badge ${cls}">${(v * 100).toFixed(1)}%</span>`;
 }
 
-// ---------- Tabs ----------
-$$(".tab").forEach((tab) => {
-  tab.onclick = () => {
-    $$(".tab").forEach((t) => t.classList.remove("active"));
-    $$(".panel").forEach((p) => p.classList.remove("active"));
-    tab.classList.add("active");
-    $("#tab-" + tab.dataset.tab).classList.add("active");
-    if (tab.dataset.tab === "rank") loadRanking();
-    if (tab.dataset.tab === "hist") renderLedger();
-    if (tab.dataset.tab === "live") refreshKeyStatus();
-  };
+// ── Tab navigation ───────────────────────────────────────────
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    const id = "tab-" + btn.dataset.tab;
+    document.getElementById(id)?.classList.add("active");
+    if (btn.dataset.tab === "hist") renderHistChart();
+    if (btn.dataset.tab === "rank") loadRanking();
+    if (btn.dataset.tab === "clv") loadClvTable();
+  });
 });
 
-// ---------- Init ----------
-async function init() {
+// ── Teams datalist ───────────────────────────────────────────
+async function loadTeams() {
   try {
-    const info = await api("/api/model_info");
-    $("#model-info").innerHTML =
-      `Treinado em <b>${info.n_train.toLocaleString("pt-BR")}</b> jogos · ` +
-      `<b>${info.n_teams}</b> seleções<br>` +
-      `vantagem mando <b>${info.home_adv.toFixed(2)}</b> · ρ <b>${info.rho.toFixed(2)}</b> · ` +
-      `dados até <b>${info.ref_date}</b>`;
-    const teams = await api("/api/teams");
-    const dl = $("#teams");
-    dl.innerHTML = teams.map((t) => `<option value="${t}">`).join("");
-  } catch (e) {
-    $("#model-info").textContent = "erro ao carregar modelo";
-    toast(e.message, true);
+    const data = await api("/api/teams");
+    const dl = document.getElementById("teams");
+    dl.innerHTML = data.teams.map((t) => `<option value="${esc(t)}">`).join("");
+    document.getElementById("model-info").textContent =
+      `Modelo treinado em ${data.n_teams} seleções | CACHE v${data.cache_version || "?"}`;
+  } catch { /* silencioso */ }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ABA PREVISÃO
+// ══════════════════════════════════════════════════════════════
+function renderPrediction(d, container) {
+  if (!d) { container.innerHTML = `<div class="card error">Erro ao calcular previsão.</div>`; return; }
+  const ci = d.ci || null;
+
+  const ciRow = (label, key) => {
+    if (!ci || !ci[key]) return "";
+    const { mean, p5, p95 } = ci[key];
+    return `<tr><td class="dim">IC 90% ${esc(label)}</td>
+      <td colspan="3"><span class="ci">${pct(p5)} – ${pct(p95)} (μ ${pct(mean)})</span></td></tr>`;
+  };
+
+  container.innerHTML = `
+  <div class="card result-card">
+    <h3>${esc(d.home)} <span class="vs">vs</span> ${esc(d.away)}</h3>
+    <table class="result-table">
+      <thead><tr><th>Resultado</th><th>Probabilidade</th><th>Odd justa</th></tr></thead>
+      <tbody>
+        <tr class="highlight"><td>Vitória ${esc(d.home)}</td><td>${pct(d.p_H)}</td><td>${odds(d.p_H)}</td></tr>
+        ${ciRow("1", "p_H")}
+        <tr><td>Empate</td><td>${pct(d.p_D)}</td><td>${odds(d.p_D)}</td></tr>
+        ${ciRow("X", "p_D")}
+        <tr><td>Vitória ${esc(d.away)}</td><td>${pct(d.p_A)}</td><td>${odds(d.p_A)}</td></tr>
+        ${ciRow("2", "p_A")}
+      </tbody>
+    </table>
+    <p class="hint" style="margin-top:8px">Placar mais provável: <b>${esc(d.most_likely_score)}</b> (λ casa: ${(d.lambda_home||0).toFixed(2)}, λ fora: ${(d.lambda_away||0).toFixed(2)})</p>
+    ${ci ? `<p class="hint">Bootstrap ${esc(d.n_bootstrap)} amostras (IC 90%).</p>` : ""}
+  </div>`;
+}
+
+document.getElementById("p-go").addEventListener("click", async () => {
+  const home = document.getElementById("p-home").value.trim();
+  const away = document.getElementById("p-away").value.trim();
+  const neutral = document.getElementById("p-neutral").checked;
+  const cont = document.getElementById("prev-result");
+  if (!home || !away) { toast("Preencha os dois times."); return; }
+  cont.innerHTML = `<div class="loading">Calculando…</div>`;
+  try {
+    const d = await api("/api/predict", { home, away, neutral });
+    renderPrediction(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+document.getElementById("p-ci").addEventListener("click", async () => {
+  const home = document.getElementById("p-home").value.trim();
+  const away = document.getElementById("p-away").value.trim();
+  const neutral = document.getElementById("p-neutral").checked;
+  const cont = document.getElementById("prev-result");
+  if (!home || !away) { toast("Preencha os dois times."); return; }
+  cont.innerHTML = `<div class="loading">Calculando intervalos de confiança (bootstrap)…</div>`;
+  try {
+    const d = await api("/api/predict_ci", { home, away, neutral });
+    renderPrediction(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+// Blend
+document.getElementById("bl-go").addEventListener("click", async () => {
+  const home = document.getElementById("p-home").value.trim();
+  const away = document.getElementById("p-away").value.trim();
+  const neutral = document.getElementById("p-neutral").checked;
+  const oH = parseFloat(document.getElementById("bl-oh").value);
+  const oD = parseFloat(document.getElementById("bl-od").value);
+  const oA = parseFloat(document.getElementById("bl-oa").value);
+  const alpha = parseFloat(document.getElementById("bl-alpha").value);
+  const cont = document.getElementById("blend-result");
+  if (!home || !away) { toast("Preencha os times na seção acima."); return; }
+  if (!oH || !oD || !oA) { toast("Preencha as três odds do mercado."); return; }
+  try {
+    const base = await api("/api/predict", { home, away, neutral });
+    const invH = 1 / oH, invD = 1 / oD, invA = 1 / oA;
+    const total = invH + invD + invA;
+    const mH = invH / total, mD = invD / total, mA = invA / total;
+    const bH = alpha * base.p_H + (1 - alpha) * mH;
+    const bD = alpha * base.p_D + (1 - alpha) * mD;
+    const bA = alpha * base.p_A + (1 - alpha) * mA;
+    cont.innerHTML = `
+    <table class="result-table" style="margin-top:12px">
+      <thead><tr><th>Resultado</th><th>Modelo</th><th>Mercado</th><th>Blend (α=${alpha})</th><th>EV</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>${pct(base.p_H)}</td><td>${pct(mH)}</td><td><b>${pct(bH)}</b></td><td>${evBadge(bH, oH)}</td></tr>
+        <tr><td>X</td><td>${pct(base.p_D)}</td><td>${pct(mD)}</td><td><b>${pct(bD)}</b></td><td>${evBadge(bD, oD)}</td></tr>
+        <tr><td>2</td><td>${pct(base.p_A)}</td><td>${pct(mA)}</td><td><b>${pct(bA)}</b></td><td>${evBadge(bA, oA)}</td></tr>
+      </tbody>
+    </table>`;
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ABA MERCADOS
+// ══════════════════════════════════════════════════════════════
+document.getElementById("m-go").addEventListener("click", async () => {
+  const home = document.getElementById("m-home").value.trim();
+  const away = document.getElementById("m-away").value.trim();
+  const neutral = document.getElementById("m-neutral").checked;
+  const cont = document.getElementById("mercados-result");
+  if (!home || !away) { toast("Preencha os dois times."); return; }
+  cont.innerHTML = `<div class="loading">Calculando mercados…</div>`;
+  try {
+    const d = await api("/api/markets", { home, away, neutral });
+    renderMarkets(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+function renderMarkets(d, cont) {
+  if (!d?.markets?.length) { cont.innerHTML = `<div class="card error">Sem mercados.</div>`; return; }
+  let html = `<div class="card"><h3>📋 Mercados — ${esc(d.home)} vs ${esc(d.away)}</h3>`;
+
+  const groups = {};
+  for (const m of d.markets) {
+    const cat = m.category || "Outros";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(m);
+  }
+
+  for (const [cat, items] of Object.entries(groups)) {
+    html += `<h4 class="market-cat">${esc(cat)}</h4>
+    <table class="market-table">
+      <thead><tr><th>Mercado</th><th>P(modelo)</th><th>Odd justa</th><th>Odd da casa</th><th>EV</th></tr></thead>
+      <tbody>`;
+    for (const m of items) {
+      const id = `odd-${(cat + (m.label || "")).replace(/\W/g, "_")}`;
+      html += `<tr>
+        <td>${esc(m.label)}</td>
+        <td>${pct(m.prob)}</td>
+        <td>${odds(m.prob)}</td>
+        <td><input class="odd-input" type="number" step="0.01" id="${esc(id)}"
+            placeholder="${odds(m.prob)}"
+            onchange="calcEV(this, ${m.prob || 0})" onkeyup="calcEV(this, ${m.prob || 0})"></td>
+        <td id="ev-${esc(id)}">—</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  html += `</div>`;
+  cont.innerHTML = html;
+}
+
+function calcEV(input, prob) {
+  const o = parseFloat(input.value);
+  const evId = "ev-" + input.id;
+  const el = document.getElementById(evId);
+  if (!el) return;
+  if (!o || !prob) { el.textContent = "—"; return; }
+  el.innerHTML = evBadge(prob, o);
+}
+window.calcEV = calcEV;
+
+// ══════════════════════════════════════════════════════════════
+//  ABA AO VIVO
+// ══════════════════════════════════════════════════════════════
+let _liveTimer = null;
+
+function getApiKey() {
+  return sessionStorage.getItem("api_football_key") || "";
+}
+
+document.getElementById("api-save").addEventListener("click", () => {
+  const k = document.getElementById("api-key").value.trim();
+  if (!k) { toast("Chave vazia."); return; }
+  sessionStorage.setItem("api_football_key", k);
+  document.getElementById("api-status").textContent = "Chave salva na sessão.";
+  toast("Chave da API salva!");
+});
+
+(function initApiKey() {
+  if (getApiKey()) document.getElementById("api-status").textContent = "Chave ativa na sessão.";
+})();
+
+document.getElementById("live-now").addEventListener("click", () => fetchLive("live"));
+document.getElementById("live-wc").addEventListener("click", () => fetchLive("wc"));
+document.getElementById("live-bydate").addEventListener("click", () => {
+  const d = document.getElementById("live-date").value;
+  if (!d) { toast("Selecione uma data."); return; }
+  fetchLive("date", d);
+});
+
+document.getElementById("live-auto").addEventListener("change", function () {
+  if (!this.checked) { clearInterval(_liveTimer); _liveTimer = null; return; }
+  _liveTimer = setInterval(() => fetchLive("live"), 30000);
+  fetchLive("live");
+});
+
+async function fetchLive(kind, dateStr) {
+  const key = getApiKey();
+  const onlyKnown = document.getElementById("live-known").checked;
+  const meta = document.getElementById("live-meta");
+  const empty = document.getElementById("live-empty");
+  meta.textContent = "Buscando…";
+  empty.style.display = "none";
+  try {
+    let endpoint = "/api/live";
+    const params = new URLSearchParams({ api_key: key, only_known: onlyKnown ? "1" : "0" });
+    if (kind === "wc") endpoint = "/api/live/world_cup";
+    if (kind === "date") { endpoint = "/api/live/date"; params.set("date", dateStr); }
+    const data = await fetch(`${endpoint}?${params}`).then((r) => r.json());
+    if (data.error) { meta.textContent = data.error; return; }
+    renderLive(data.matches || [], meta, empty);
+  } catch (e) { meta.textContent = "Erro: " + esc(e.message); }
+}
+
+function renderLive(matches, meta, empty) {
+  const tbody = document.querySelector("#live-table tbody");
+  tbody.innerHTML = "";
+  meta.textContent = `${matches.length} jogo(s) — ${new Date().toLocaleTimeString("pt-BR")}`;
+  if (!matches.length) { empty.style.display = ""; empty.textContent = "Nenhum jogo encontrado."; return; }
+  empty.style.display = "none";
+  for (const m of matches) {
+    const p = m.pred;
+    const score = m.score_home != null ? `${m.score_home}–${m.score_away}` : "—";
+    const likely = p?.most_likely_score || "—";
+    const leitura = p ? `${pct(p.p_H)} / ${pct(p.p_D)} / ${pct(p.p_A)}` : "sem dados";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><span class="status-chip ${m.is_live ? "live" : "done"}">${esc(m.status)}</span></td>
+      <td>${esc(m.elapsed != null ? m.elapsed + "'" : (m.datetime || "").slice(11, 16))}</td>
+      <td>${esc(m.league || "")} ${esc(m.country || "")}</td>
+      <td><b>${esc(m.home)}</b> vs <b>${esc(m.away)}</b></td>
+      <td>${esc(score)}</td>
+      <td>${p ? pct(p.p_H) : "—"}</td>
+      <td>${p ? pct(p.p_D) : "—"}</td>
+      <td>${p ? pct(p.p_A) : "—"}</td>
+      <td>${esc(likely)}</td>
+      <td>${esc(leitura)}</td>`;
+    tbody.appendChild(tr);
   }
 }
 
-// ---------- Mercados ----------
-$("#m-go").onclick = async () => {
-  const home = $("#m-home").value.trim();
-  const away = $("#m-away").value.trim();
-  if (!home || !away) return toast("Preencha os dois times.", true);
-  $("#mercados-result").innerHTML = '<div class="card"><span class="spinner"></span> calculando mercados…</div>';
+// ══════════════════════════════════════════════════════════════
+//  ABA VALUE BETS
+// ══════════════════════════════════════════════════════════════
+document.getElementById("v-go").addEventListener("click", async () => {
+  const home = document.getElementById("v-home").value.trim();
+  const away = document.getElementById("v-away").value.trim();
+  const neutral = document.getElementById("v-neutral").checked;
+  const oH = parseFloat(document.getElementById("v-oh").value);
+  const oD = parseFloat(document.getElementById("v-od").value);
+  const oA = parseFloat(document.getElementById("v-oa").value);
+  const cont = document.getElementById("value-result");
+  if (!home || !away) { toast("Preencha os dois times."); return; }
+  cont.innerHTML = `<div class="loading">Analisando…</div>`;
   try {
-    const d = await api("/api/markets", { home, away, neutral: $("#m-neutral").checked });
-    renderMercados(d);
-  } catch (e) {
-    $("#mercados-result").innerHTML = "";
-    toast(e.message, true);
-  }
-};
-
-function renderMercados(d) {
-  const blocks = d.markets.map((mkt) => {
-    const noteHtml = mkt.note
-      ? `<div class="mkt-note">⚙️ ${mkt.note}</div>`
-      : "";
-
-    const rows = mkt.selections.map((s, idx) => {
-      const inputId = `odd-${mkt.market.replace(/[^\w]/g, "_")}-${idx}`;
-      return `<tr class="mkt-row" data-p="${s.p}" data-input="${inputId}">
-        <td class="sel-label">${s.label}</td>
-        <td class="pct-col"><b>${pct(s.p)}</b></td>
-        <td class="odd-col"><span class="fair-odd">${s.odd_justa.toFixed(2)}</span></td>
-        <td class="odd-col">
-          <input class="odd-input" id="${inputId}" type="number" step="0.01" min="1.01"
-            placeholder="—" onchange="calcEV(this)" oninput="calcEV(this)">
-        </td>
-        <td class="ev-col" id="ev-${inputId}">—</td>
-        <td class="action-col" id="ac-${inputId}"></td>
-      </tr>`;
-    }).join("");
-
-    return `<div class="mkt-block">
-      <div class="mkt-header">${mkt.icon} <span>${mkt.market}</span></div>
-      ${noteHtml}
-      <table class="mkt-table">
-        <thead><tr>
-          <th>Seleção</th><th>P(modelo)</th><th>Odd justa</th><th>Odd da casa</th><th>EV</th><th></th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
+    const d = await api("/api/predict", { home, away, neutral });
+    const rows = [
+      { side: "Casa (1)", p: d.p_H, o: oH },
+      { side: "Empate (X)", p: d.p_D, o: oD },
+      { side: "Fora (2)", p: d.p_A, o: oA },
+    ];
+    const hasValue = rows.some((r) => r.o && evNum(r.p, r.o) > 0);
+    cont.innerHTML = `
+    <div class="card">
+      <h3>${esc(d.home)} vs ${esc(d.away)}</h3>
+      ${hasValue ? '<div class="value-alert">✅ Apostas de valor detectadas!</div>' : '<div class="no-value">Nenhuma aposta de valor no limiar atual.</div>'}
+      <table class="result-table">
+        <thead><tr><th>Lado</th><th>P(modelo)</th><th>Odd justa</th><th>Odd da casa</th><th>EV</th></tr></thead>
+        <tbody>
+          ${rows.map((r) => `
+          <tr class="${r.o && evNum(r.p, r.o) > 0.03 ? "value-row" : ""}">
+            <td>${esc(r.side)}</td><td>${pct(r.p)}</td><td>${odds(r.p)}</td>
+            <td>${r.o ? r.o.toFixed(2) : "—"}</td><td>${r.o ? evBadge(r.p, r.o) : "—"}</td>
+          </tr>`).join("")}
+        </tbody>
       </table>
     </div>`;
-  }).join("");
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
 
-  const rates = d.corner_rate != null ? `
-    <div class="mkt-rates">
-      <span>🚩 Escanteios esperados: <b>${d.corner_rate}</b></span>
-      <span>🟨 Cartões esperados: <b>${d.card_rate}</b></span>
-      <span>👟 Chutes esperados: <b>${d.shot_rate}</b></span>
-      <span>🎯 Chutes ao gol: <b>${d.sot_rate}</b></span>
-      <span>🚫 Impedimentos: <b>${d.offside_rate}</b></span>
-    </div>` : "";
+// ══════════════════════════════════════════════════════════════
+//  ABA ALERTAS — Value Scan
+// ══════════════════════════════════════════════════════════════
+let _alertRows = [];
 
-  const disclaimer = d.disclaimer_jogador
-    ? `<div class="mkt-disclaimer">⚠️ ${d.disclaimer_jogador}</div>` : "";
-
-  const summary = `<div class="card mkt-summary">
-    <div class="match-head">
-      <span class="team">${d.home}</span>
-      <span style="color:var(--muted);font-size:13px">
-        xG ${d.lam_h.toFixed(2)} — ${d.lam_a.toFixed(2)}
-      </span>
-      <span class="team">${d.away}</span>
-    </div>
-    ${rates}
-    <p class="hint" style="margin:8px 0 0">
-      Cole as odds da casa na coluna <b>"Odd da casa"</b> para ver o EV instantaneamente.
-      Linhas verdes = valor positivo. Mercados com ⚙️ usam modelo estatístico calibrado em dados de Copa.
-    </p>
-    ${disclaimer}
-  </div>`;
-
-  $("#mercados-result").innerHTML = summary + `<div class="mkt-grid">${blocks}</div>`;
-}
-
-window.calcEV = function(input) {
-  const odd = parseFloat(input.value);
-  const row = input.closest("tr");
-  const p = parseFloat(row.dataset.p);
-  const inputId = row.dataset.input;
-  const evCell = document.getElementById("ev-" + inputId);
-  const acCell = document.getElementById("ac-" + inputId);
-
-  if (!odd || odd <= 1 || isNaN(p)) {
-    evCell.textContent = "—";
-    evCell.className = "ev-col";
-    row.classList.remove("row-value", "row-novalue");
-    acCell.innerHTML = "";
+function renderAlertRows() {
+  const cont = document.getElementById("alertas-rows");
+  if (!_alertRows.length) {
+    cont.innerHTML = `<p class="hint">Clique em "+ Adicionar confronto" para começar.</p>`;
     return;
   }
-
-  const ev = p * odd - 1;
-  const evPct = (ev * 100).toFixed(1);
-  evCell.textContent = (ev >= 0 ? "+" : "") + evPct + "%";
-  evCell.className = "ev-col " + (ev > 0 ? "pos" : "neg");
-  row.classList.toggle("row-value",  ev > 0);
-  row.classList.toggle("row-novalue", ev <= 0);
-
-  if (ev > 0) {
-    const kelly = Math.max((odd * p - 1) / (odd - 1), 0);
-    const k4 = (kelly / 4 * 100).toFixed(1);
-    acCell.innerHTML = `<span class="badge good" title="1/4 Kelly sugerido">K¼ ${k4}%</span>`;
-  } else {
-    acCell.innerHTML = `<span class="badge bad">sem valor</span>`;
-  }
-};
-
-// ---------- Previsão ----------
-$("#p-go").onclick = async () => {
-  const home = $("#p-home").value.trim();
-  const away = $("#p-away").value.trim();
-  if (!home || !away) return toast("Preencha os dois times.", true);
-  $("#prev-result").innerHTML = '<div class="card"><span class="spinner"></span> calculando…</div>';
-  try {
-    const p = await api("/api/predict", { home, away, neutral: $("#p-neutral").checked });
-    renderPrediction(p);
-  } catch (e) {
-    $("#prev-result").innerHTML = "";
-    toast(e.message, true);
-  }
-};
-
-function renderPrediction(p) {
-  const scores = p.top_scores.map((s) => `<span class="score-chip">${s.score} <b>${pct(s.p)}</b></span>`).join("");
-  $("#prev-result").innerHTML = `
-    <div class="card">
-      <div class="match-head">
-        <span class="team">${p.home}</span>
-        <span style="color:var(--muted)">${p.neutral ? "campo neutro" : "mandante: " + p.home}</span>
-        <span class="team">${p.away}</span>
-      </div>
-      <div class="bar1x2">
-        <div class="bar-h" style="width:${p.p_H * 100}%">${pct(p.p_H)}</div>
-        <div class="bar-d" style="width:${p.p_D * 100}%">${pct(p.p_D)}</div>
-        <div class="bar-a" style="width:${p.p_A * 100}%">${pct(p.p_A)}</div>
-      </div>
-      <div class="bar-legend"><span>🔵 ${p.home}</span><span>⚪ Empate</span><span>🟠 ${p.away}</span></div>
-      <div class="grid">
-        <div class="stat"><div class="k">Over 2.5 gols</div><div class="v">${pct(p.p_over25)}</div></div>
-        <div class="stat"><div class="k">Under 2.5 gols</div><div class="v">${pct(p.p_under25)}</div></div>
-        <div class="stat"><div class="k">Ambos marcam (sim)</div><div class="v">${pct(p.p_btts_yes)}</div></div>
-        <div class="stat"><div class="k">Placar + provável</div><div class="v">${p.top_score}</div></div>
-        <div class="stat"><div class="k">Gols esperados (λ)</div><div class="v">${p.lam_h.toFixed(2)} - ${p.lam_a.toFixed(2)}</div></div>
-        <div class="stat"><div class="k">ELO</div><div class="v">${Math.round(p.elo_home)} - ${Math.round(p.elo_away)}</div></div>
-      </div>
-      <p class="hint" style="margin-top:16px">Placares mais prováveis:</p>
-      <div class="scores">${scores}</div>
-    </div>`;
+  cont.innerHTML = _alertRows.map((r, i) => `
+  <div class="alert-row">
+    <input list="teams" class="al-home" value="${esc(r.home)}" placeholder="Mandante"
+      onchange="_alertRows[${i}].home=this.value">
+    <input list="teams" class="al-away" value="${esc(r.away)}" placeholder="Visitante"
+      onchange="_alertRows[${i}].away=this.value">
+    <input type="number" step="0.01" class="al-oh" value="${r.oH || ""}" placeholder="Odd 1"
+      onchange="_alertRows[${i}].oH=+this.value">
+    <input type="number" step="0.01" class="al-od" value="${r.oD || ""}" placeholder="Odd X"
+      onchange="_alertRows[${i}].oD=+this.value">
+    <input type="number" step="0.01" class="al-oa" value="${r.oA || ""}" placeholder="Odd 2"
+      onchange="_alertRows[${i}].oA=+this.value">
+    <button class="icon-btn" onclick="_alertRows.splice(${i},1);renderAlertRows()">✕</button>
+  </div>`).join("");
 }
+window._alertRows = _alertRows;
+window.renderAlertRows = renderAlertRows;
 
-// ---------- Value Bets ----------
-$("#v-go").onclick = async () => {
-  const home = $("#v-home").value.trim(), away = $("#v-away").value.trim();
-  if (!home || !away) return toast("Preencha os dois times.", true);
-  $("#value-result").innerHTML = '<div class="card"><span class="spinner"></span> analisando…</div>';
+document.getElementById("al-add-row").addEventListener("click", () => {
+  _alertRows.push({ home: "", away: "", oH: null, oD: null, oA: null });
+  renderAlertRows();
+});
+
+document.getElementById("al-scan").addEventListener("click", async () => {
+  const minEv = (parseFloat(document.getElementById("al-minev").value) || 3) / 100;
+  const neutral = document.getElementById("al-neutral").checked;
+  const cont = document.getElementById("alertas-result");
+  const matchups = _alertRows
+    .filter((r) => r.home && r.away)
+    .map((r) => ({ home: r.home, away: r.away, neutral, odds: { H: r.oH, D: r.oD, A: r.oA } }));
+  if (!matchups.length) { toast("Adicione pelo menos um confronto."); return; }
+  cont.innerHTML = `<div class="loading">Varrendo ${matchups.length} jogos…</div>`;
   try {
-    const d = await api("/api/value", {
-      home, away, neutral: $("#v-neutral").checked,
-      odd_H: $("#v-oh").value, odd_D: $("#v-od").value, odd_A: $("#v-oa").value,
-    });
-    renderValue(d);
-  } catch (e) {
-    $("#value-result").innerHTML = "";
-    toast(e.message, true);
-  }
-};
+    const d = await api("/api/value_scan", { matchups, min_ev: minEv });
+    if (!d.alerts?.length) {
+      cont.innerHTML = `<div class="card"><p>Nenhuma aposta de valor acima de ${(minEv * 100).toFixed(1)}%.</p></div>`;
+      return;
+    }
+    let html = `<div class="card"><h3>🔔 ${d.alerts.length} alerta(s) de valor</h3>
+    <table class="market-table">
+      <thead><tr><th>Jogo</th><th>Lado</th><th>P(modelo)</th><th>Odd</th><th>EV</th></tr></thead><tbody>`;
+    for (const a of d.alerts) {
+      html += `<tr class="value-row">
+        <td>${esc(a.home)} vs ${esc(a.away)}</td>
+        <td>${esc(a.side_label)}</td>
+        <td>${pct(a.prob)}</td>
+        <td>${(a.odd || 0).toFixed(2)}</td>
+        <td>${evBadge(a.prob, a.odd)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+    cont.innerHTML = html;
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
 
-function renderValue(d) {
-  if (!d.market.length) {
-    $("#value-result").innerHTML = '<div class="card hint">Informe ao menos uma odd válida.</div>';
-    return;
-  }
-  const rows = d.market.map((m) => {
-    const good = m.ev > 0;
-    return `<div class="value-row ${good ? "good" : ""}">
-      <div>
-        <div class="vlabel">${m.label} <span style="color:var(--muted)">@ ${m.odd.toFixed(2)}</span></div>
-        <div class="vmeta">Modelo ${pct(m.p_model)} · Implícita ${pct(m.implied)} · Edge ${(m.edge * 100).toFixed(1)}pp · Kelly ¼ = ${pct(m.kelly_quarter)} da banca</div>
-      </div>
-      <span class="badge ${good ? "good" : "bad"}">EV ${m.ev >= 0 ? "+" : ""}${(m.ev * 100).toFixed(1)}%</span>
-    </div>`;
-  }).join("");
-  const best = d.market[0];
-  const tip = best.ev > 0
-    ? `✅ Melhor valor: <b>${best.label}</b> (EV +${(best.ev * 100).toFixed(1)}%).`
-    : "❌ Nenhum lado tem EV positivo — a casa está em vantagem em todos.";
-  $("#value-result").innerHTML = `<div class="card">
-    <div class="match-head"><span class="team">${d.pred.home}</span><span class="team">${d.pred.away}</span></div>
-    ${rows}<p class="hint" style="margin-top:10px">${tip}</p></div>`;
-}
+renderAlertRows();
 
-// ---------- Gestão de Banca ----------
+// ══════════════════════════════════════════════════════════════
+//  ABA GESTÃO DE BANCA
+// ══════════════════════════════════════════════════════════════
 let BETS = [];
 
-$("#b-add").onclick = async () => {
-  const home = $("#b-home").value.trim(), away = $("#b-away").value.trim();
-  const side = $("#b-side").value, odd = parseFloat($("#b-odd").value);
-  if (!home || !away) return toast("Preencha os dois times.", true);
-  if (!odd || odd <= 1) return toast("Informe uma odd válida (> 1).", true);
+function saveBets() { sessionStorage.setItem("bets", JSON.stringify(BETS)); }
+function loadBets() {
+  try { BETS = JSON.parse(sessionStorage.getItem("bets") || "[]"); } catch { BETS = []; }
+}
+loadBets();
+
+document.getElementById("b-add").addEventListener("click", async () => {
+  const home = document.getElementById("b-home").value.trim();
+  const away = document.getElementById("b-away").value.trim();
+  const neutral = document.getElementById("b-neutral").checked;
+  const side = document.getElementById("b-side").value;
+  const odd = parseFloat(document.getElementById("b-odd").value);
+  if (!home || !away || !odd) { toast("Preencha time, adversário e odd."); return; }
   try {
-    const p = await api("/api/predict", { home, away, neutral: $("#b-neutral").checked });
-    const pmap = { H: p.p_H, D: p.p_D, A: p.p_A };
-    const lmap = { H: `${home} vence`, D: "Empate", A: `${away} vence` };
-    const prob = pmap[side];
-    BETS.push({ label: `${home} x ${away} — ${lmap[side]}`, p: prob, odd, ev: prob * odd - 1 });
+    const d = await api("/api/predict", { home, away, neutral });
+    const pMap = { H: d.p_H, D: d.p_D, A: d.p_A };
+    BETS.push({ home, away, side, odd, p: pMap[side], neutral, ts: Date.now() });
+    saveBets();
     renderBets();
-    $("#b-odd").value = "";
-  } catch (e) {
-    toast(e.message, true);
-  }
-};
+    toast("Aposta adicionada!");
+  } catch (e) { toast("Erro: " + e.message); }
+});
 
 function renderBets() {
-  const tb = $("#bets-table tbody");
-  $("#bets-empty").style.display = BETS.length ? "none" : "block";
-  $("#bets-table").style.display = BETS.length ? "table" : "none";
-  $("#b-clear").style.display = BETS.length ? "inline-block" : "none";
-  $("#b-to-hist").style.display = BETS.length ? "inline-block" : "none";
-  tb.innerHTML = BETS.map((b, i) => `<tr>
-    <td>${b.label}</td>
+  const t = document.getElementById("bets-table");
+  const empty = document.getElementById("bets-empty");
+  const clearBtn = document.getElementById("b-clear");
+  const regBtn = document.getElementById("b-to-hist");
+  if (!BETS.length) {
+    t.style.display = "none"; empty.style.display = ""; clearBtn.style.display = "none"; regBtn.style.display = "none";
+    return;
+  }
+  t.style.display = ""; empty.style.display = "none"; clearBtn.style.display = ""; regBtn.style.display = "";
+  const labels = { H: "Casa (1)", D: "Empate (X)", A: "Fora (2)" };
+  t.querySelector("tbody").innerHTML = BETS.map((b, i) => `
+  <tr>
+    <td>${esc(b.home)} vs ${esc(b.away)} — ${esc(labels[b.side])}</td>
     <td>${pct(b.p)}</td>
     <td>${b.odd.toFixed(2)}</td>
-    <td class="${b.ev > 0 ? "pos" : "neg"}">${b.ev >= 0 ? "+" : ""}${(b.ev * 100).toFixed(1)}%</td>
-    <td><button class="del-btn" onclick="delBet(${i})">✕</button></td>
+    <td>${evBadge(b.p, b.odd)}</td>
+    <td><button class="icon-btn" onclick="removeBet(${i})">✕</button></td>
   </tr>`).join("");
 }
-window.delBet = (i) => { BETS.splice(i, 1); renderBets(); };
 
-$("#bk-strategy").onchange = (e) => {
-  const kelly = e.target.value === "kelly";
-  $("#bk-kelly-wrap").classList.toggle("hidden", !kelly);
-  $("#bk-flat-wrap").classList.toggle("hidden", kelly);
-};
+function removeBet(i) { BETS.splice(i, 1); saveBets(); renderBets(); }
+window.removeBet = removeBet;
 
-let bankChart = null;
-$("#bk-go").onclick = async () => {
-  if (!BETS.length) return toast("Adicione apostas primeiro.", true);
-  $("#banca-result").innerHTML = '<div class="card"><span class="spinner"></span> simulando milhares de cenários…</div>';
-  try {
-    const d = await api("/api/bankroll", {
-      bets: BETS,
-      bankroll: $("#bk-amount").value,
-      strategy: $("#bk-strategy").value,
-      kelly_mult: $("#bk-kelly").value,
-      flat_pct: parseFloat($("#bk-flat").value) / 100,
-      min_edge: parseFloat($("#bk-minedge").value) / 100,
-      n_sims: 20000,
-    });
-    renderBanca(d);
-  } catch (e) {
-    $("#banca-result").innerHTML = "";
-    toast(e.message, true);
-  }
-};
+document.getElementById("b-clear").addEventListener("click", () => { BETS = []; saveBets(); renderBets(); });
 
-function renderBanca(d) {
-  const mc = d.mc;
-  if (!mc.ok) {
-    $("#banca-result").innerHTML = `<div class="card hint">${mc.reason} (Ajuste o "EV mínimo" ou inclua apostas de valor.)</div>`;
-    return;
-  }
-  const roiCls = mc.roi_mediano >= 0 ? "good" : "bad";
-  const ruinCls = mc.prob_ruina > 0.1 ? "bad" : mc.prob_ruina > 0.02 ? "warn" : "good";
-  const ddCls = mc.drawdown_p95 > 0.5 ? "bad" : mc.drawdown_p95 > 0.3 ? "warn" : "good";
-
-  const compRows = d.compare.map((c) => `<tr>
-    <td><b>${c.nome}</b></td>
-    <td>${money(c.final_mediana)}</td>
-    <td>${money(c.final_p5)}</td>
-    <td>${money(c.final_p95)}</td>
-    <td class="${c.prob_lucro >= 0.5 ? "pos" : ""}">${pct(c.prob_lucro)}</td>
-    <td class="${c.prob_ruina > 0.05 ? "neg" : ""}">${pct(c.prob_ruina)}</td>
-    <td>${pct(c.drawdown_p95)}</td>
-  </tr>`).join("");
-
-  $("#banca-result").innerHTML = `
-    <div class="card">
-      <h3>Resultado da simulação — ${mc.n_sims.toLocaleString("pt-BR")} cenários · ${mc.n_bets} apostas válidas</h3>
-      <div class="risk-grid">
-        <div class="risk"><div class="k">Banca final (mediana)</div><div class="v">${money(mc.final_mediana)}</div></div>
-        <div class="risk"><div class="k">ROI mediano</div><div class="v ${roiCls}">${mc.roi_mediano >= 0 ? "+" : ""}${pct(mc.roi_mediano)}</div></div>
-        <div class="risk"><div class="k">Prob. de lucro</div><div class="v ${mc.prob_lucro >= 0.5 ? "good" : "warn"}">${pct(mc.prob_lucro)}</div></div>
-        <div class="risk"><div class="k">Prob. de dobrar</div><div class="v">${pct(mc.prob_dobrar)}</div></div>
-        <div class="risk"><div class="k">Prob. de ruína</div><div class="v ${ruinCls}">${pct(mc.prob_ruina)}</div></div>
-        <div class="risk"><div class="k">Drawdown típico (P95)</div><div class="v ${ddCls}">${pct(mc.drawdown_p95)}</div></div>
-        <div class="risk"><div class="k">Cenário ruim (P5)</div><div class="v">${money(mc.final_p5)}</div></div>
-        <div class="risk"><div class="k">Cenário bom (P95)</div><div class="v">${money(mc.final_p95)}</div></div>
-      </div>
-      <div class="chart-wrap"><canvas id="bankChart" height="110"></canvas></div>
-    </div>
-    <div class="card">
-      <h3>Comparação de estratégias (mesmas apostas)</h3>
-      <p class="hint">Kelly cheio maximiza crescimento mas com drawdowns brutais. Frações menores trocam retorno por estabilidade.</p>
-      <table><thead><tr><th>Estratégia</th><th>Final med.</th><th>P5 (ruim)</th><th>P95 (bom)</th><th>Prob. lucro</th><th>Prob. ruína</th><th>DD P95</th></tr></thead>
-      <tbody>${compRows}</tbody></table>
-    </div>`;
-
-  drawChart(mc.sample_paths, mc.bankroll_inicial);
-}
-
-function drawChart(paths, initial) {
-  const ctx = $("#bankChart");
-  if (bankChart) bankChart.destroy();
-  const labels = paths[0].map((_, i) => i);
-  const datasets = paths.slice(0, 25).map((p) => ({
-    data: p, borderColor: "rgba(59,130,246,0.25)", borderWidth: 1,
-    pointRadius: 0, tension: 0.1,
-  }));
-  datasets.push({
-    data: labels.map(() => initial), borderColor: "#9aa7b4",
-    borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0,
-  });
-  bankChart = new Chart(ctx, {
-    type: "line",
-    data: { labels, datasets },
-    options: {
-      responsive: true, animation: false,
-      plugins: { legend: { display: false }, title: { display: true, text: "Trajetórias de banca (amostra de 25 cenários)", color: "#9aa7b4" } },
-      scales: {
-        x: { title: { display: true, text: "nº de apostas", color: "#9aa7b4" }, ticks: { color: "#9aa7b4" }, grid: { color: "#2a3140" } },
-        y: { title: { display: true, text: "banca", color: "#9aa7b4" }, ticks: { color: "#9aa7b4" }, grid: { color: "#2a3140" } },
-      },
-    },
-  });
-}
-
-// ---------- Ao Vivo (API-Football) ----------
-const LIVE_KEY = "apifootball_key";
-const getKey = () => (localStorage.getItem(LIVE_KEY) || "").trim();
-
-function refreshKeyStatus() {
-  const k = getKey();
-  if ($("#api-key")) $("#api-key").value = k;
-  const s = $("#api-status");
-  if (s) {
-    s.textContent = k ? "Chave salva ✓" : "Sem chave salva.";
-    s.className = "hint inline" + (k ? " pos" : "");
-  }
-}
-
-$("#api-save").onclick = () => {
-  const k = $("#api-key").value.trim();
-  localStorage.setItem(LIVE_KEY, k);
-  refreshKeyStatus();
-  toast(k ? "Chave salva no navegador." : "Chave removida.");
-};
-
-async function apiLive(path) {
-  const r = await fetch(path, { headers: { "X-Api-Key": getKey() } });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || "Erro no servidor");
-  return data;
-}
-
-let liveTimer = null;
-let lastLiveFetch = null;
-
-async function loadLive(kind) {
-  if (!getKey()) return toast("Salve sua chave da API-Football primeiro.", true);
-  const known = $("#live-known").checked ? 1 : 0;
-  let path;
-  if (kind === "live") path = `/api/live?only_known=${known}`;
-  else if (kind === "wc") path = `/api/upcoming?mode=worldcup&season=2026`;
-  else if (kind === "date") {
-    const d = $("#live-date").value;
-    if (!d) return toast("Escolha uma data.", true);
-    path = `/api/upcoming?mode=date&date=${d}&only_known=${known}`;
-  }
-  lastLiveFetch = () => loadLive(kind);
-  $("#live-empty").style.display = "none";
-  $("#live-meta").textContent = "buscando…";
-  try {
-    const d = await apiLive(path);
-    renderLive(d.games);
-    $("#live-meta").textContent =
-      `${d.count} jogo(s) · atualizado ${new Date().toLocaleTimeString("pt-BR")}`;
-  } catch (e) {
-    $("#live-meta").textContent = "";
-    toast(e.message, true);
-  }
-}
-
-$("#live-now").onclick = () => loadLive("live");
-$("#live-wc").onclick = () => loadLive("wc");
-$("#live-bydate").onclick = () => loadLive("date");
-
-$("#live-auto").onchange = (e) => {
-  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
-  if (e.target.checked) {
-    liveTimer = setInterval(() => { if (lastLiveFetch) lastLiveFetch(); }, 30000);
-    toast("Auto-atualização ligada (30s).");
-  }
-};
-
-function fmtTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const hh = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  return sameDay ? hh : `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${hh}`;
-}
-
-function renderLive(games) {
-  const tb = $("#live-table tbody");
-  if (!games.length) {
-    tb.innerHTML = "";
-    $("#live-empty").style.display = "block";
-    $("#live-empty").textContent = "Nenhum jogo encontrado para esse filtro.";
-    return;
-  }
-  $("#live-empty").style.display = "none";
-  tb.innerHTML = games.map((g) => {
-    let stCls = "st-sched";
-    if (g.is_live) stCls = "st-live";
-    else if (g.is_done) stCls = "st-done";
-    const stHtml = `<span class="st ${stCls}">${g.status}${g.is_live && g.elapsed ? " " + g.elapsed + "'" : ""}</span>`;
-    const score = (g.score_home != null && g.score_away != null)
-      ? `<b>${g.score_home} - ${g.score_away}</b>` : "—";
-    const comp = `${g.country ? g.country + " · " : ""}${g.league || ""}`;
-    const matchTxt = `${g.home || "?"} <span class="vs">x</span> ${g.away || "?"}`;
-    let p1 = "—", px = "—", p2 = "—", top = "—", read = '<span class="muted">fora do modelo</span>';
-    if (g.pred) {
-      const pr = g.pred;
-      p1 = pct(pr.p_H); px = pct(pr.p_D); p2 = pct(pr.p_A); top = pr.top_score;
-      const opts = [[pr.p_H, g.home_model + " vence"], [pr.p_D, "Empate"], [pr.p_A, g.away_model + " vence"]];
-      opts.sort((a, b) => b[0] - a[0]);
-      read = `<b>${opts[0][1]}</b> ${pct(opts[0][0])}`;
+document.getElementById("b-csv").addEventListener("change", async function () {
+  const file = this.files[0]; if (!file) return;
+  const text = await file.text();
+  const rows = parseCSV(text);
+  if (!rows.length) { toast("CSV vazio."); return; }
+  const h = rows[0].map((c) => c.toLowerCase().trim());
+  const idx = (k) => h.indexOf(k);
+  let added = 0;
+  for (const row of rows.slice(1)) {
+    if (!row.length || !row[0]) continue;
+    const get = (k) => (idx(k) >= 0 ? (row[idx(k)] || "").trim() : "");
+    const home = get("home"), away = get("away");
+    if (!home || !away) continue;
+    if (idx("side") >= 0 && idx("odd") >= 0) {
+      const side = (get("side") || "H").toUpperCase();
+      const odd = parseFloat(get("odd"));
+      if (!odd) continue;
+      const neutral = get("neutral") !== "0";
+      try {
+        const d = await api("/api/predict", { home, away, neutral });
+        const pMap = { H: d.p_H, D: d.p_D, A: d.p_A };
+        BETS.push({ home, away, side, odd, p: pMap[side] || null, neutral, ts: Date.now() });
+        added++;
+      } catch { /* skip */ }
+    } else {
+      for (const [side, col] of [["H", "odd_h"], ["D", "odd_d"], ["A", "odd_a"]]) {
+        const odd = parseFloat(get(col));
+        if (!odd) continue;
+        const neutral = get("neutral") !== "0";
+        try {
+          const d = await api("/api/predict", { home, away, neutral });
+          const pMap = { H: d.p_H, D: d.p_D, A: d.p_A };
+          BETS.push({ home, away, side, odd, p: pMap[side] || null, neutral, ts: Date.now() });
+          added++;
+        } catch { /* skip */ }
+      }
     }
-    return `<tr class="${g.is_live ? "row-live" : ""}">
-      <td>${stHtml}</td>
-      <td>${fmtTime(g.datetime)}</td>
-      <td class="comp">${comp}</td>
-      <td class="match">${matchTxt}</td>
-      <td class="score">${score}</td>
-      <td>${p1}</td><td>${px}</td><td>${p2}</td>
-      <td>${top}</td>
-      <td class="read">${read}</td>
-    </tr>`;
-  }).join("");
-}
-
-// ---------- Importar CSV (Gestão de Banca) ----------
-function parseCSV(text) {
-  const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim());
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-  return lines.slice(1).map((line) => {
-    const cells = line.split(",");
-    const obj = {};
-    headers.forEach((h, i) => (obj[h] = (cells[i] || "").trim()));
-    return obj;
-  });
-}
-
-function downloadFile(name, content) {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 100);
-}
-
-$("#b-csv-template").onclick = (e) => {
-  e.preventDefault();
-  downloadFile("modelo_apostas.csv",
-    "home,away,side,odd,neutral\nBrazil,Argentina,1,2.30,true\nFrance,Germany,X,3.20,true\nSpain,Portugal,2,3.40,true\n");
-  toast("Modelo CSV baixado.");
-};
-
-$("#b-csv").onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  try {
-    const rows = parseCSV(await file.text());
-    if (!rows.length) return toast("CSV vazio ou sem linhas de dados.", true);
-    const d = await api("/api/batch_bets", { rows, neutral: $("#b-neutral").checked });
-    if (d.bets.length) { BETS.push(...d.bets); renderBets(); }
-    let msg = `${d.bets.length} aposta(s) importada(s).`;
-    if (d.skipped.length) msg += ` ${d.skipped.length} ignorada(s).`;
-    toast(msg, d.bets.length === 0);
-    if (d.skipped.length) console.warn("Linhas ignoradas:", d.skipped);
-  } catch (err) {
-    toast(err.message, true);
   }
-  e.target.value = "";
-};
+  saveBets(); renderBets();
+  toast(`${added} aposta(s) importada(s).`);
+  this.value = "";
+});
 
-$("#b-clear").onclick = () => { BETS = []; renderBets(); };
+document.getElementById("b-csv-template").addEventListener("click", (e) => {
+  e.preventDefault();
+  const csv = "home,away,side,odd,neutral\nBrazil,Argentina,H,2.30,1\nFrance,Germany,D,3.50,1\n";
+  const a = document.createElement("a");
+  a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+  a.download = "modelo_apostas.csv"; a.click();
+});
 
-$("#b-to-hist").onclick = () => {
-  if (!BETS.length) return;
-  const v = prompt("Valor a apostar em CADA uma (R$)?", "5");
-  if (v === null) return;
-  const stake = parseFloat(v);
-  if (!stake || stake <= 0) return toast("Valor inválido.", true);
-  BETS.forEach((b) => addLedger({ label: b.label, odd: b.odd, stake, p: b.p }));
-  toast(`${BETS.length} aposta(s) enviada(s) ao histórico.`);
-};
+document.getElementById("b-to-hist").addEventListener("click", () => {
+  const labels = { H: "Casa (1)", D: "Empate (X)", A: "Fora (2)" };
+  for (const b of BETS) {
+    HISTORY.push({
+      date: new Date().toLocaleDateString("pt-BR"),
+      id: Date.now() + Math.random(),
+      desc: `${b.home} vs ${b.away} — ${labels[b.side]}`,
+      odd: b.odd, stake: null, p: b.p, status: "pending", result: null,
+    });
+  }
+  saveHistory(); renderHistory();
+  toast(`${BETS.length} aposta(s) enviada(s) ao histórico!`);
+  document.querySelector('[data-tab="hist"]').click();
+});
 
-// ---------- Histórico / Ledger (localStorage) ----------
-const LEDGER_KEY = "bet_ledger";
-const LEDGER_START_KEY = "ledger_start";
-let LEDGER = [];
-try { LEDGER = JSON.parse(localStorage.getItem(LEDGER_KEY) || "[]"); } catch (e) { LEDGER = []; }
-let histChart = null;
+document.getElementById("bk-go").addEventListener("click", async () => {
+  const bankroll = parseFloat(document.getElementById("bk-amount").value) || 100;
+  const strategy = document.getElementById("bk-strategy").value;
+  const kellyF = parseFloat(document.getElementById("bk-kelly").value) || 0.25;
+  const flatPct = (parseFloat(document.getElementById("bk-flat").value) || 2) / 100;
+  const minEdge = (parseFloat(document.getElementById("bk-minedge").value) || 0) / 100;
+  const cont = document.getElementById("banca-result");
 
-const saveLedger = () => localStorage.setItem(LEDGER_KEY, JSON.stringify(LEDGER));
-const ledgerStart = () => parseFloat(localStorage.getItem(LEDGER_START_KEY)) || 100;
+  const bets = BETS.filter((b) => b.p && b.odd);
+  if (!bets.length) { toast("Adicione pelo menos uma aposta na lista."); return; }
+  const validBets = bets.filter((b) => evNum(b.p, b.odd) >= minEdge);
+  if (!validBets.length) { toast("Nenhuma aposta supera o EV mínimo configurado."); return; }
 
-function addLedger(entry) {
-  LEDGER.push({ id: Date.now() + Math.random(), date: new Date().toISOString(), status: "pending", ...entry });
-  saveLedger();
-  renderLedger();
+  const N = 10000;
+  const finals = [];
+  for (let i = 0; i < N; i++) {
+    let bk = bankroll;
+    for (const b of validBets) {
+      const kelly = Math.max(0, (b.p * b.odd - 1) / (b.odd - 1));
+      let stake = strategy === "kelly" ? bk * kelly * kellyF : bk * flatPct;
+      stake = Math.min(stake, bk);
+      bk += Math.random() < b.p ? stake * (b.odd - 1) : -stake;
+      if (bk <= 0) { bk = 0; break; }
+    }
+    finals.push(bk);
+  }
+  finals.sort((a, b) => a - b);
+  const mean = finals.reduce((s, v) => s + v, 0) / N;
+  const p5 = finals[Math.floor(N * 0.05)];
+  const p95 = finals[Math.floor(N * 0.95)];
+  const pRuin = finals.filter((v) => v <= 0).length / N;
+  const roi = ((mean - bankroll) / bankroll) * 100;
+
+  cont.innerHTML = `
+  <div class="card">
+    <h3>Simulação Monte Carlo (${N.toLocaleString()} cenários)</h3>
+    <div class="risk-grid">
+      <div class="risk-item"><span class="risk-label">Banca média final</span><span class="risk-val">${mean.toFixed(2)}</span></div>
+      <div class="risk-item"><span class="risk-label">ROI esperado</span><span class="risk-val ${roi >= 0 ? "pos" : "neg"}">${roi.toFixed(1)}%</span></div>
+      <div class="risk-item"><span class="risk-label">IC 90%</span><span class="risk-val">${p5.toFixed(2)} – ${p95.toFixed(2)}</span></div>
+      <div class="risk-item"><span class="risk-label">P(ruína)</span><span class="risk-val ${pRuin > 0.05 ? "neg" : "pos"}">${(pRuin * 100).toFixed(1)}%</span></div>
+    </div>
+    <p class="hint">${validBets.length} de ${bets.length} apostas passaram no filtro de EV ≥ ${(minEdge * 100).toFixed(1)}%.</p>
+  </div>`;
+});
+
+document.getElementById("bk-strategy").addEventListener("change", function () {
+  document.getElementById("bk-kelly-wrap").classList.toggle("hidden", this.value !== "kelly");
+  document.getElementById("bk-flat-wrap").classList.toggle("hidden", this.value !== "flat");
+});
+
+renderBets();
+
+// ══════════════════════════════════════════════════════════════
+//  ABA HISTÓRICO
+// ══════════════════════════════════════════════════════════════
+let HISTORY = [];
+let _histChart = null;
+
+function saveHistory() { sessionStorage.setItem("history", JSON.stringify(HISTORY)); }
+function loadHistory() {
+  try { HISTORY = JSON.parse(sessionStorage.getItem("history") || "[]"); } catch { HISTORY = []; }
 }
+loadHistory();
 
-window.setLedger = (id, status) => {
-  const e = LEDGER.find((x) => String(x.id) === String(id));
-  if (e) { e.status = e.status === status ? "pending" : status; saveLedger(); renderLedger(); }
-};
-window.delLedger = (id) => {
-  LEDGER = LEDGER.filter((x) => String(x.id) !== String(id));
-  saveLedger();
-  renderLedger();
-};
+document.getElementById("h-add").addEventListener("click", () => {
+  const desc = document.getElementById("h-desc").value.trim();
+  const odd = parseFloat(document.getElementById("h-odd").value);
+  const stake = parseFloat(document.getElementById("h-stake").value);
+  const p = parseFloat(document.getElementById("h-p").value) / 100 || null;
+  if (!desc || !odd || !stake) { toast("Preencha descrição, odd e stake."); return; }
+  HISTORY.push({
+    date: new Date().toLocaleDateString("pt-BR"),
+    id: Date.now() + Math.random(),
+    desc, odd, stake, p, status: "pending", result: null,
+  });
+  saveHistory(); renderHistory();
+  ["h-desc", "h-odd", "h-stake", "h-p"].forEach((id) => { document.getElementById(id).value = ""; });
+  toast("Aposta registrada!");
+});
 
-$("#h-add").onclick = () => {
-  const label = $("#h-desc").value.trim();
-  const odd = parseFloat($("#h-odd").value);
-  const stake = parseFloat($("#h-stake").value);
-  const pRaw = parseFloat($("#h-p").value);
-  if (!label) return toast("Descreva a aposta.", true);
-  if (!odd || odd <= 1) return toast("Odd inválida (> 1).", true);
-  if (!stake || stake <= 0) return toast("Valor apostado inválido.", true);
-  addLedger({ label, odd, stake, p: isNaN(pRaw) ? null : pRaw / 100 });
-  $("#h-desc").value = $("#h-odd").value = $("#h-stake").value = $("#h-p").value = "";
-};
-
-$("#h-start").onchange = (e) => {
-  localStorage.setItem(LEDGER_START_KEY, parseFloat(e.target.value) || 100);
-  renderLedger();
-};
-
-$("#h-reset").onclick = () => {
-  if (!LEDGER.length) return;
-  if (!confirm("Apagar todo o histórico de apostas? Isso não pode ser desfeito.")) return;
-  LEDGER = [];
-  saveLedger();
-  renderLedger();
-  toast("Histórico zerado.");
-};
-
-function pnlOf(e) {
-  if (e.status === "won") return e.stake * (e.odd - 1);
-  if (e.status === "lost") return -e.stake;
-  return 0;
+function setStatus(id, status) {
+  const b = HISTORY.find((h) => h.id === id);
+  if (!b) return;
+  b.status = status;
+  b.result = status === "won" ? +(b.stake * (b.odd - 1)).toFixed(2)
+           : status === "lost" ? -b.stake
+           : null;
+  saveHistory(); renderHistory(); renderHistChart();
 }
+window.setStatus = setStatus;
 
-function renderLedger() {
-  if (!$("#h-start")) return;
-  $("#h-start").value = ledgerStart();
-  const tb = $("#hist-table tbody");
-  $("#hist-empty").style.display = LEDGER.length ? "none" : "block";
-  $("#hist-table").style.display = LEDGER.length ? "table" : "none";
+function removeHist(id) {
+  const i = HISTORY.findIndex((h) => h.id === id);
+  if (i >= 0) { HISTORY.splice(i, 1); saveHistory(); renderHistory(); renderHistChart(); }
+}
+window.removeHist = removeHist;
 
-  const resolved = LEDGER.filter((e) => e.status !== "pending");
-  const won = resolved.filter((e) => e.status === "won");
-  const stakedResolved = resolved.reduce((s, e) => s + e.stake, 0);
-  const profit = resolved.reduce((s, e) => s + pnlOf(e), 0);
-  const roi = stakedResolved > 0 ? profit / stakedResolved : 0;
-  const hit = resolved.length ? won.length / resolved.length : 0;
-  const bankNow = ledgerStart() + profit;
+function renderHistory() {
+  const t = document.getElementById("hist-table");
+  const empty = document.getElementById("hist-empty");
+  const summary = document.getElementById("hist-summary");
+  if (!HISTORY.length) { t.style.display = "none"; empty.style.display = ""; summary.innerHTML = ""; return; }
+  t.style.display = ""; empty.style.display = "none";
 
-  const cls = (v) => (v > 0 ? "good" : v < 0 ? "bad" : "");
-  $("#hist-summary").innerHTML = `
-    <div class="risk"><div class="k">Banca atual</div><div class="v ${cls(profit)}">${money(bankNow)}</div></div>
-    <div class="risk"><div class="k">Lucro / prejuízo</div><div class="v ${cls(profit)}">${profit >= 0 ? "+" : ""}${money(profit)}</div></div>
-    <div class="risk"><div class="k">ROI realizado</div><div class="v ${cls(roi)}">${resolved.length ? (roi >= 0 ? "+" : "") + pct(roi) : "—"}</div></div>
-    <div class="risk"><div class="k">Taxa de acerto</div><div class="v">${resolved.length ? pct(hit) : "—"}</div></div>
-    <div class="risk"><div class="k">Apostas resolvidas</div><div class="v">${resolved.length} / ${LEDGER.length}</div></div>
-    <div class="risk"><div class="k">Total apostado (resolv.)</div><div class="v">${money(stakedResolved)}</div></div>`;
+  const settled = HISTORY.filter((h) => h.status !== "pending");
+  const totalStake = settled.reduce((s, h) => s + (h.stake || 0), 0);
+  const totalResult = settled.reduce((s, h) => s + (h.result || 0), 0);
+  const wins = settled.filter((h) => h.status === "won").length;
+  const roi = totalStake ? ((totalResult / totalStake) * 100).toFixed(1) : "—";
+  const start = parseFloat(document.getElementById("h-start").value) || 100;
+  const bank = start + totalResult;
 
-  tb.innerHTML = LEDGER.slice().reverse().map((e) => {
-    const pnl = pnlOf(e);
-    const stTxt = e.status === "won" ? "Ganhou" : e.status === "lost" ? "Perdeu" : "Pendente";
-    const stCls = e.status === "won" ? "st-done" : e.status === "lost" ? "st-live" : "st-sched";
-    const ev = e.p != null ? ((e.p * e.odd - 1) * 100).toFixed(1) + "%" : "—";
-    return `<tr>
-      <td>${new Date(e.date).toLocaleDateString("pt-BR")}</td>
-      <td>${e.label}</td>
-      <td>${e.odd.toFixed(2)}</td>
-      <td>${money(e.stake)}${e.status !== "pending" ? `<br><span class="${cls(pnl)}">${pnl >= 0 ? "+" : ""}${money(pnl)}</span>` : ""}</td>
-      <td>${ev}</td>
-      <td><span class="st ${stCls}">${stTxt}</span></td>
-      <td class="ledger-actions">
-        <button class="mini ${e.status === "won" ? "on-win" : ""}" onclick="setLedger('${e.id}','won')">✓ ganhou</button>
-        <button class="mini ${e.status === "lost" ? "on-lose" : ""}" onclick="setLedger('${e.id}','lost')">✕ perdeu</button>
-      </td>
-      <td><button class="del-btn" onclick="delLedger('${e.id}')">🗑</button></td>
+  summary.innerHTML = `
+  <div class="risk-grid">
+    <div class="risk-item"><span class="risk-label">Banca atual</span><span class="risk-val">${bank.toFixed(2)}</span></div>
+    <div class="risk-item"><span class="risk-label">P/L total</span><span class="risk-val ${totalResult >= 0 ? "pos" : "neg"}">${totalResult >= 0 ? "+" : ""}${totalResult.toFixed(2)}</span></div>
+    <div class="risk-item"><span class="risk-label">ROI</span><span class="risk-val ${parseFloat(roi) >= 0 ? "pos" : "neg"}">${roi}%</span></div>
+    <div class="risk-item"><span class="risk-label">Vitórias</span><span class="risk-val">${wins}/${settled.length}</span></div>
+  </div>`;
+
+  t.querySelector("tbody").innerHTML = HISTORY.slice().reverse().map((h) => {
+    const evStr = h.p && h.odd ? ev(h.p, h.odd) : "—";
+    const opts = ["pending", "won", "lost", "void"]
+      .map((s) => `<option value="${s}" ${h.status === s ? "selected" : ""}>${s}</option>`).join("");
+    const res = h.result != null ? (h.result >= 0 ? "+" : "") + h.result.toFixed(2) : "—";
+    return `<tr class="hist-row ${esc(h.status)}">
+      <td>${esc(h.date)}</td>
+      <td>${esc(h.desc)}</td>
+      <td>${h.odd.toFixed(2)}</td>
+      <td>${(h.stake || 0).toFixed(2)}</td>
+      <td>${esc(evStr)}</td>
+      <td><select onchange="setStatus(${h.id}, this.value)">${opts}</select></td>
+      <td class="${h.result != null && h.result >= 0 ? "pos" : "neg"}">${esc(res)}</td>
+      <td><button class="icon-btn" onclick="removeHist(${h.id})">✕</button></td>
     </tr>`;
   }).join("");
-
-  drawLedgerChart();
 }
 
-function drawLedgerChart() {
-  const ctx = $("#histChart");
+function renderHistChart() {
+  const ctx = document.getElementById("histChart");
   if (!ctx) return;
-  if (histChart) histChart.destroy();
-  const resolved = LEDGER.filter((e) => e.status !== "pending");
-  let bank = ledgerStart();
-  const pts = [bank];
-  resolved.forEach((e) => { bank += pnlOf(e); pts.push(bank); });
-  histChart = new Chart(ctx, {
+  const settled = HISTORY.filter((h) => h.status !== "pending");
+  const start = parseFloat(document.getElementById("h-start").value) || 100;
+  let running = start;
+  const labels = [], data = [start];
+  for (const h of settled) {
+    running += h.result || 0;
+    labels.push(esc(h.desc.slice(0, 20)));
+    data.push(parseFloat(running.toFixed(2)));
+  }
+  if (_histChart) _histChart.destroy();
+  _histChart = new Chart(ctx, {
     type: "line",
     data: {
-      labels: pts.map((_, i) => i),
+      labels: ["Início", ...labels],
+      datasets: [{ label: "Banca", data, borderColor: "#3b82f6", fill: true,
+        backgroundColor: "rgba(59,130,246,0.1)", tension: 0.3, pointRadius: 3 }],
+    },
+    options: { responsive: true, plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: false } } },
+  });
+}
+
+document.getElementById("h-export-csv").addEventListener("click", async () => {
+  if (!HISTORY.length) { toast("Nenhuma aposta no histórico."); return; }
+  try {
+    const r = await fetch("/api/clv/export");
+    if (r.ok) {
+      const b = await r.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(b); a.download = "historico_clv.csv"; a.click();
+      return;
+    }
+  } catch { /* fallback local */ }
+  const cols = ["date", "desc", "odd", "stake", "status", "result"];
+  const rows = [cols.join(",")].concat(HISTORY.map((h) => cols.map((c) => csvCell(h[c])).join(",")));
+  const a = document.createElement("a");
+  a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(rows.join("\n"));
+  a.download = "historico_apostas.csv"; a.click();
+});
+
+document.getElementById("h-reset").addEventListener("click", () => {
+  if (!confirm("Zerar todo o histórico?")) return;
+  HISTORY = []; saveHistory(); renderHistory(); renderHistChart(); toast("Histórico zerado.");
+});
+
+renderHistory();
+
+// ══════════════════════════════════════════════════════════════
+//  ABA CLV TRACKER
+// ══════════════════════════════════════════════════════════════
+let CLV = [];
+
+function saveCLV() { sessionStorage.setItem("clv", JSON.stringify(CLV)); }
+function loadCLVData() {
+  try { CLV = JSON.parse(sessionStorage.getItem("clv") || "[]"); } catch { CLV = []; }
+}
+loadCLVData();
+
+document.getElementById("clv-add").addEventListener("click", () => {
+  const match = document.getElementById("clv-match").value.trim();
+  const side = document.getElementById("clv-side").value;
+  const entry = parseFloat(document.getElementById("clv-entry").value);
+  const closing = parseFloat(document.getElementById("clv-closing").value) || null;
+  const stake = parseFloat(document.getElementById("clv-stake").value) || null;
+  const result = document.getElementById("clv-result").value;
+  if (!match || !entry) { toast("Preencha jogo e odd de entrada."); return; }
+  const clvPct = closing ? ((entry / closing - 1) * 100) : null;
+  CLV.push({
+    date: new Date().toLocaleDateString("pt-BR"),
+    id: Date.now() + Math.random(),
+    match, side, entry, closing, clvPct, stake, result,
+  });
+  saveCLV(); loadClvTable();
+  ["clv-match", "clv-entry", "clv-closing", "clv-stake"].forEach((id) => { document.getElementById(id).value = ""; });
+  document.getElementById("clv-result").value = "";
+  toast("Aposta CLV registrada!");
+});
+
+document.getElementById("clv-refresh").addEventListener("click", loadClvTable);
+
+function loadClvTable() {
+  const panel = document.getElementById("clv-stats-panel");
+  const card = document.getElementById("clv-table-card");
+  if (!CLV.length) {
+    panel.innerHTML = `<div class="card"><p class="hint">Nenhuma aposta registrada ainda.</p></div>`;
+    card.style.display = "none"; return;
+  }
+  const withCLV = CLV.filter((c) => c.clvPct != null);
+  const avgCLV = withCLV.length ? withCLV.reduce((s, c) => s + c.clvPct, 0) / withCLV.length : null;
+  const posRate = withCLV.length ? withCLV.filter((c) => c.clvPct > 0).length / withCLV.length : null;
+  const settled = CLV.filter((c) => c.result === "W" || c.result === "L");
+  const wr = settled.length ? settled.filter((c) => c.result === "W").length / settled.length : null;
+
+  panel.innerHTML = `
+  <div class="card">
+    <h3>📊 Estatísticas CLV</h3>
+    <div class="risk-grid">
+      <div class="risk-item"><span class="risk-label">CLV médio</span>
+        <span class="risk-val ${avgCLV != null && avgCLV >= 0 ? "pos" : "neg"}">
+          ${avgCLV != null ? (avgCLV >= 0 ? "+" : "") + avgCLV.toFixed(2) + "%" : "—"}</span></div>
+      <div class="risk-item"><span class="risk-label">Taxa CLV positivo</span>
+        <span class="risk-val ${posRate != null && posRate > 0.5 ? "pos" : "neg"}">
+          ${posRate != null ? (posRate * 100).toFixed(1) + "%" : "—"}</span></div>
+      <div class="risk-item"><span class="risk-label">Win rate</span>
+        <span class="risk-val">${wr != null ? (wr * 100).toFixed(1) + "%" : "—"} (${settled.length} apostas)</span></div>
+      <div class="risk-item"><span class="risk-label">Total registradas</span>
+        <span class="risk-val">${CLV.length}</span></div>
+    </div>
+    <p class="hint">CLV positivo = você obteve melhor preço que o fechamento do mercado. Edge real se consistente.</p>
+  </div>`;
+
+  card.style.display = "";
+  const sideLabels = { H: "Casa (1)", D: "Empate (X)", A: "Fora (2)" };
+  document.querySelector("#clv-table tbody").innerHTML = CLV.slice().reverse().map((c) => `
+  <tr>
+    <td>${esc(c.date)}</td><td>${esc(c.match)}</td><td>${esc(sideLabels[c.side] || c.side)}</td>
+    <td>${c.entry?.toFixed(2) || "—"}</td>
+    <td>${c.closing?.toFixed(2) || "—"}</td>
+    <td class="${c.clvPct != null && c.clvPct >= 0 ? "pos" : "neg"}">
+      ${c.clvPct != null ? (c.clvPct >= 0 ? "+" : "") + c.clvPct.toFixed(2) + "%" : "—"}</td>
+    <td>${c.stake?.toFixed(2) || "—"}</td>
+    <td>${esc(c.result || "Pendente")}</td>
+    <td><button class="icon-btn" onclick="removeCLV(${c.id})">✕</button></td>
+  </tr>`).join("");
+}
+
+function removeCLV(id) {
+  const i = CLV.findIndex((c) => c.id === id);
+  if (i >= 0) { CLV.splice(i, 1); saveCLV(); loadClvTable(); }
+}
+window.removeCLV = removeCLV;
+
+loadClvTable();
+
+// ══════════════════════════════════════════════════════════════
+//  ABA RANKING
+// ══════════════════════════════════════════════════════════════
+async function loadRanking() {
+  const t = document.querySelector("#rank-table tbody");
+  t.innerHTML = `<tr><td colspan="5">Carregando…</td></tr>`;
+  try {
+    const d = await api("/api/ranking");
+    t.innerHTML = d.ranking.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${esc(r.team)}</td>
+      <td>${r.elo?.toFixed(0) || "—"}</td>
+      <td>${r.attack?.toFixed(3) || "—"}</td>
+      <td>${r.defense?.toFixed(3) || "—"}</td>
+    </tr>`).join("");
+  } catch (e) { t.innerHTML = `<tr><td colspan="5">Erro: ${esc(e.message)}</td></tr>`; }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ABA CALIBRAÇÃO — Backtesting
+// ══════════════════════════════════════════════════════════════
+let _btChart = null;
+
+document.getElementById("bt-run").addEventListener("click", async () => {
+  const from = document.getElementById("bt-from").value;
+  const to = document.getElementById("bt-to").value;
+  const sample = parseInt(document.getElementById("bt-sample").value) || 500;
+  const cont = document.getElementById("bt-result");
+  cont.innerHTML = `<div class="loading">Rodando backtesting (${sample} jogos)…</div>`;
+  try {
+    const params = new URLSearchParams({ from, to, sample });
+    const d = await fetch(`/api/backtest?${params}`).then((r) => r.json());
+    if (!d.ok) { cont.innerHTML = `<div class="card error">${esc(d.error || "Erro desconhecido")}</div>`; return; }
+    renderBacktest(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+function renderBacktest(d, cont) {
+  cont.innerHTML = `
+  <div class="card">
+    <h3>Resultado do backtesting — ${d.n_games} jogos</h3>
+    <div class="risk-grid">
+      <div class="risk-item"><span class="risk-label">Brier Score</span><span class="risk-val">${(d.brier_score || 0).toFixed(4)}</span></div>
+      <div class="risk-item"><span class="risk-label">Log-loss</span><span class="risk-val">${(d.log_loss || 0).toFixed(4)}</span></div>
+      <div class="risk-item"><span class="risk-label">Acurácia 1X2</span><span class="risk-val">${pct(d.accuracy)}</span></div>
+    </div>
+    <p class="hint">${esc(d.interpretation || "")}</p>
+    <div class="chart-wrap"><canvas id="calChart" height="90"></canvas></div>
+  </div>`;
+
+  const cal = d.calibration || [];
+  const bins = cal.map((b) => (b.bin_center || 0).toFixed(2));
+  const freqs = cal.map((b) => +(b.freq || 0).toFixed(3));
+  const ctx = document.getElementById("calChart");
+  if (_btChart) _btChart.destroy();
+  _btChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: bins,
       datasets: [
-        { data: pts, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,0.12)", borderWidth: 2, pointRadius: 2, tension: 0.15, fill: true },
-        { data: pts.map(() => ledgerStart()), borderColor: "#9aa7b4", borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0 },
+        { label: "Freq. real", data: freqs, borderColor: "#3b82f6", tension: 0.3, pointRadius: 4 },
+        { label: "Perfeito", data: bins.map((b) => parseFloat(b)), borderColor: "#10b981",
+          borderDash: [5, 5], pointRadius: 0 },
       ],
     },
     options: {
-      responsive: true, animation: false,
-      plugins: { legend: { display: false }, title: { display: true, text: "Evolução da banca (apostas resolvidas)", color: "#9aa7b4" } },
+      responsive: true,
+      plugins: {
+        legend: { position: "bottom" },
+        title: { display: true, text: "Curva de calibração" },
+      },
       scales: {
-        x: { ticks: { color: "#9aa7b4" }, grid: { color: "#2a3140" } },
-        y: { ticks: { color: "#9aa7b4" }, grid: { color: "#2a3140" } },
+        x: { title: { display: true, text: "P prevista" } },
+        y: { title: { display: true, text: "P real" }, min: 0, max: 1 },
       },
     },
   });
 }
 
-// ---------- Ranking ----------
-async function loadRanking() {
-  const tb = $("#rank-table tbody");
-  if (tb.children.length) return;
-  try {
-    const r = await api("/api/ranking?top=40");
-    tb.innerHTML = r.map((t, i) => `<tr>
-      <td>${i + 1}</td><td><b>${t.team}</b></td>
-      <td>${Math.round(t.elo)}</td>
-      <td>${t.attack.toFixed(2)}</td>
-      <td>${t.defense.toFixed(2)}</td></tr>`).join("");
-  } catch (e) { toast(e.message, true); }
+// ══════════════════════════════════════════════════════════════
+//  ABA AGENTE IA
+// ══════════════════════════════════════════════════════════════
+let _agentHistory = [];
+
+function getAgentKey() { return sessionStorage.getItem("anthropic_key") || ""; }
+
+document.getElementById("ag-save-key").addEventListener("click", () => {
+  const k = document.getElementById("ag-key").value.trim();
+  if (!k) { toast("Chave vazia."); return; }
+  sessionStorage.setItem("anthropic_key", k);
+  toast("Chave Anthropic salva na sessão!");
+});
+
+document.getElementById("ag-reset").addEventListener("click", () => {
+  _agentHistory = [];
+  document.getElementById("agent-messages").innerHTML = `
+  <div class="agent-msg system"><div class="msg-bubble">
+    Conversa reiniciada. Como posso ajudar?</div></div>`;
+});
+
+document.getElementById("ag-send").addEventListener("click", sendAgent);
+document.getElementById("ag-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendAgent(); }
+});
+
+function sendExample(btn) {
+  document.getElementById("ag-input").value = btn.textContent;
+  document.querySelector('[data-tab="agente"]').click();
+  sendAgent();
 }
+window.sendExample = sendExample;
 
-refreshKeyStatus();
-init();
+async function sendAgent() {
+  const input = document.getElementById("ag-input");
+  const msg = input.value.trim();
+  if (!msg) return;
+  const key = getAgentKey();
+  if (!key) { toast("Salve sua chave Anthropic primeiro."); return; }
 
-// ---------- Agente IA ----------
-const AGENT_SESSION = "copa2026_" + Math.random().toString(36).slice(2);
+  input.value = "";
+  appendAgentMsg("user", msg);
+  _agentHistory.push({ role: "user", content: msg });
 
-function agKey() {
-  return localStorage.getItem("ag_key") || "";
-}
-
-$("#ag-save-key").onclick = () => {
-  const k = $("#ag-key").value.trim();
-  if (!k) return toast("Cole sua chave Anthropic.", true);
-  localStorage.setItem("ag_key", k);
-  $("#ag-key").value = "";
-  toast("Chave salva no navegador.");
-};
-
-$("#ag-reset").onclick = async () => {
-  await fetch("/api/agent/reset", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: AGENT_SESSION }),
-  });
-  $("#agent-messages").innerHTML = `<div class="agent-msg system">
-    <div class="msg-bubble">Conversa reiniciada. Como posso ajudar?</div>
-  </div>`;
-};
-
-async function sendAgentMessage(text) {
-  const key = agKey() || $("#ag-key").value.trim();
-  if (!key) { toast("Salve sua chave Anthropic primeiro.", true); return; }
-
-  appendAgentMsg("user", text);
-  const thinking = appendAgentMsg("assistant", '<span class="spinner"></span> analisando…', true);
+  const bubble = appendAgentMsg("assistant", "…");
 
   try {
     const r = await fetch("/api/agent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, session_id: AGENT_SESSION, anthropic_key: key }),
+      body: JSON.stringify({ message: msg, history: _agentHistory.slice(-20), api_key: key, stream: true }),
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || "Erro no agente");
-    thinking.remove();
-    appendAgentMsg("assistant", formatAgentResponse(d.response), false, d.tools_used);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("text/event-stream")) {
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "", full = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const chunk = JSON.parse(line.slice(6));
+            if (chunk.delta) { full += chunk.delta; bubble.innerHTML = mdToHtml(esc(full)); }
+            if (chunk.done) { _agentHistory.push({ role: "assistant", content: full }); }
+          } catch { /* skip malformed */ }
+        }
+      }
+    } else {
+      const d = await r.json();
+      const reply = d.response || d.error || "Sem resposta.";
+      bubble.innerHTML = mdToHtml(esc(reply));
+      _agentHistory.push({ role: "assistant", content: reply });
+    }
   } catch (e) {
-    thinking.remove();
-    appendAgentMsg("assistant", "❌ " + e.message);
-    toast(e.message, true);
+    bubble.innerHTML = `<span class="error">${esc(e.message)}</span>`;
   }
+  scrollAgent();
 }
 
-function appendAgentMsg(role, html, temp = false, tools = []) {
-  const wrap = document.createElement("div");
-  wrap.className = `agent-msg ${role}${temp ? " temp" : ""}`;
+function appendAgentMsg(role, text) {
+  const msgs = document.getElementById("agent-messages");
+  const div = document.createElement("div");
+  div.className = `agent-msg ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
-  bubble.innerHTML = html;
-  wrap.appendChild(bubble);
-  if (tools && tools.length) {
-    const t = document.createElement("div");
-    t.className = "msg-tools";
-    t.textContent = "🔧 " + tools.join(" · ");
-    wrap.appendChild(t);
-  }
-  $("#agent-messages").appendChild(wrap);
-  wrap.scrollIntoView({ behavior: "smooth", block: "end" });
-  return wrap;
+  bubble.innerHTML = role === "user" ? esc(text) : mdToHtml(esc(text));
+  div.appendChild(bubble);
+  msgs.appendChild(div);
+  scrollAgent();
+  return bubble;
 }
 
-function formatAgentResponse(text) {
-  // Escapa HTML antes de processar markdown para evitar XSS
-  const safe = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-  return safe
-    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-    .replace(/\*(.+?)\*/g, "<i>$1</i>")
+function scrollAgent() {
+  const el = document.getElementById("agent-messages");
+  el.scrollTop = el.scrollHeight;
+}
+
+function mdToHtml(s) {
+  return s
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(/`(.+?)`/g, "<code>$1</code>")
-    .replace(/^#{1,3} (.+)$/gm, "<b style='font-size:15px'>$1</b>")
-    .replace(/^- (.+)$/gm, "• $1")
-    .replace(/\n\n/g, "<br><br>")
     .replace(/\n/g, "<br>");
 }
 
-$("#ag-send").onclick = () => {
-  const msg = $("#ag-input").value.trim();
-  if (!msg) return;
-  $("#ag-input").value = "";
-  sendAgentMessage(msg);
-};
-
-$("#ag-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    $("#ag-send").click();
+// ══════════════════════════════════════════════════════════════
+//  UTILITÁRIO — CSV parser (RFC 4180)
+// ══════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuote = false;
+  const t = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inQuote) {
+      if (ch === '"' && t[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') { inQuote = false; }
+      else field += ch;
+    } else {
+      if (ch === '"') { inQuote = true; }
+      else if (ch === ",") { row.push(field); field = ""; }
+      else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else field += ch;
+    }
   }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c.trim()));
+}
+
+function csvCell(v) {
+  if (v == null) return "";
+  const s = String(v);
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ABA MODELO ML — XGBoost + Rolling Features
+// ══════════════════════════════════════════════════════════════
+let _mlBtChart = null;
+
+// Status ao entrar na aba
+document.querySelector('[data-tab="ml"]')?.addEventListener("click", loadMlStatus);
+
+async function loadMlStatus() {
+  const panel = document.getElementById("ml-meta-panel");
+  const status = document.getElementById("ml-train-status");
+  try {
+    const d = await api("/api/ml/status");
+    if (d.trained && d.meta) {
+      renderMlMeta(d.meta, panel);
+      status.textContent = "✅ Modelo treinado e pronto.";
+    } else {
+      panel.innerHTML = "";
+      status.textContent = d.message || "Modelo não treinado.";
+    }
+  } catch { status.textContent = "Erro ao verificar status."; }
+}
+
+function renderMlMeta(meta, container) {
+  if (!meta) { container.innerHTML = ""; return; }
+  container.innerHTML = `
+  <div class="risk-grid" style="margin-top:14px">
+    <div class="risk-item"><span class="risk-label">Amostras treino</span><span class="risk-val">${meta.n_samples || "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Features</span><span class="risk-val">${meta.n_features || "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Log-loss OOF</span><span class="risk-val">${meta.oof_log_loss != null ? meta.oof_log_loss.toFixed(4) : "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Acurácia 1X2</span><span class="risk-val">${meta.accuracy_1x2 != null ? pct(meta.accuracy_1x2) : "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Brier Casa</span><span class="risk-val">${meta.brier_H != null ? meta.brier_H.toFixed(4) : "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Brier Empate</span><span class="risk-val">${meta.brier_D != null ? meta.brier_D.toFixed(4) : "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Brier Fora</span><span class="risk-val">${meta.brier_A != null ? meta.brier_A.toFixed(4) : "—"}</span></div>
+    <div class="risk-item"><span class="risk-label">Treinado em</span><span class="risk-val" style="font-size:.8rem">${(meta.trained_at || "").slice(0, 16).replace("T", " ")}</span></div>
+  </div>
+  <p class="hint" style="margin-top:8px">Validação por <b>TimeSeriesSplit</b> (${meta.n_splits || 5} folds). OOF = Out-of-Fold — sem data leakage.</p>`;
+}
+
+async function trainMl(force = false) {
+  const status = document.getElementById("ml-train-status");
+  const panel = document.getElementById("ml-meta-panel");
+  status.textContent = "⏳ Treinando… (pode levar vários minutos na primeira vez)";
+  panel.innerHTML = `<div class="loading">Construindo features rolling (3/5/10 jogos) e treinando XGBoost…</div>`;
+  try {
+    const d = await api("/api/ml/train", { force });
+    if (d.ok) {
+      renderMlMeta(d.meta, panel);
+      status.textContent = "✅ Modelo treinado com sucesso!";
+      toast("Modelo ML treinado!");
+    } else {
+      panel.innerHTML = `<div class="card error">${esc(d.error || "Erro desconhecido")}</div>`;
+      status.textContent = "❌ Falha no treino.";
+    }
+  } catch (e) {
+    panel.innerHTML = `<div class="card error">${esc(e.message)}</div>`;
+    status.textContent = "❌ Erro na requisição.";
+  }
+}
+
+document.getElementById("ml-train")?.addEventListener("click", () => trainMl(false));
+document.getElementById("ml-train-force")?.addEventListener("click", () => trainMl(true));
+
+// Previsão ML
+document.getElementById("ml-predict")?.addEventListener("click", async () => {
+  const home = document.getElementById("ml-home").value.trim();
+  const away = document.getElementById("ml-away").value.trim();
+  const neutral = document.getElementById("ml-neutral").checked;
+  const oH = parseFloat(document.getElementById("ml-oh").value) || null;
+  const oD = parseFloat(document.getElementById("ml-od").value) || null;
+  const oA = parseFloat(document.getElementById("ml-oa").value) || null;
+  const minEv = (parseFloat(document.getElementById("ml-minev").value) || 3) / 100;
+  const cont = document.getElementById("ml-predict-result");
+  if (!home || !away) { toast("Preencha os dois times."); return; }
+  cont.innerHTML = `<div class="loading">Calculando (XGBoost calibrado)…</div>`;
+  try {
+    const body = { home, away, neutral, min_ev: minEv };
+    if (oH) body.odd_H = oH;
+    if (oD) body.odd_D = oD;
+    if (oA) body.odd_A = oA;
+    const d = await api("/api/ml/predict", body);
+    if (d.error) { cont.innerHTML = `<div class="card error">${esc(d.error)}</div>`; return; }
+    renderMlPredict(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
 });
 
-window.sendExample = (btn) => {
-  $("#ag-input").value = btn.textContent.trim();
-  // Ativa a aba do agente sem depender de querySelector por texto
-  const agenteTab = Array.from($$(".tab")).find((t) => t.dataset.tab === "agente");
-  if (agenteTab && !agenteTab.classList.contains("active")) agenteTab.click();
-  setTimeout(() => $("#ag-send").click(), 100);
-};
+function renderMlPredict(d, cont) {
+  const hasValue = d.value_bets?.some((b) => b.is_value);
+  let html = `
+  <div class="card result-card">
+    <h3>${esc(d.home)} <span class="vs">vs</span> ${esc(d.away)} <span class="hint" style="font-size:.75rem">(XGBoost calibrado)</span></h3>
+    <table class="result-table">
+      <thead><tr><th>Resultado</th><th>P(ML)</th><th>Odd justa</th></tr></thead>
+      <tbody>
+        <tr class="highlight"><td>Vitória ${esc(d.home)}</td><td>${pct(d.p_H)}</td><td>${d.odd_fair_H || "—"}</td></tr>
+        <tr><td>Empate</td><td>${pct(d.p_D)}</td><td>${d.odd_fair_D || "—"}</td></tr>
+        <tr><td>Vitória ${esc(d.away)}</td><td>${pct(d.p_A)}</td><td>${d.odd_fair_A || "—"}</td></tr>
+      </tbody>
+    </table>`;
+
+  if (d.value_bets?.length) {
+    html += `<h4 style="margin-top:14px">Análise de valor</h4>`;
+    if (hasValue) html += `<div class="value-alert" style="margin-bottom:8px">✅ Aposta(s) de valor detectada(s)!</div>`;
+    html += `<table class="market-table">
+      <thead><tr><th>Lado</th><th>P(ML)</th><th>P(casa)</th><th>Odd</th><th>EV</th><th>Kelly ¼</th></tr></thead>
+      <tbody>`;
+    for (const b of d.value_bets) {
+      html += `<tr class="${b.is_value ? "value-row" : ""}">
+        <td>${esc(b.label)}</td>
+        <td>${pct(b.p_model)}</td>
+        <td>${pct(b.p_implied)}</td>
+        <td>${b.odd.toFixed(2)}</td>
+        <td>${evBadge(b.p_model, b.odd)}</td>
+        <td>${b.is_value ? (b.kelly_quarter * 100).toFixed(1) + "%" : "—"}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  html += `</div>`;
+  cont.innerHTML = html;
+}
+
+// Stake type toggle
+document.getElementById("ml-stake-type")?.addEventListener("change", function () {
+  document.getElementById("ml-flat-wrap")?.classList.toggle("hidden", this.value !== "flat");
+});
+
+// Backtesting financeiro ML
+document.getElementById("ml-bt-run")?.addEventListener("click", async () => {
+  const bankroll = parseFloat(document.getElementById("ml-bk").value) || 100;
+  const stakeType = document.getElementById("ml-stake-type").value;
+  const kellyF = parseFloat(document.getElementById("ml-kelly-f").value) || 0.25;
+  const flatPct = (parseFloat(document.getElementById("ml-flat").value) || 2) / 100;
+  const minEv = (parseFloat(document.getElementById("ml-bt-ev").value) || 3) / 100;
+  const nSplits = parseInt(document.getElementById("ml-splits").value) || 5;
+  const cont = document.getElementById("ml-bt-result");
+  cont.innerHTML = `<div class="loading">Rodando backtesting temporal (${nSplits} folds, pode demorar)…</div>`;
+  try {
+    const params = new URLSearchParams({
+      bankroll, kelly_fraction: kellyF, min_ev: minEv, n_splits: nSplits,
+      ...(stakeType === "flat" ? { flat_stake_pct: flatPct } : {}),
+    });
+    const d = await fetch(`/api/ml/backtest?${params}`).then((r) => r.json());
+    if (!d.ok) { cont.innerHTML = `<div class="card error">${esc(d.error || "Erro")}</div>`; return; }
+    renderMlBacktest(d, cont);
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+});
+
+function renderMlBacktest(d, cont) {
+  const yieldCls = d.yield_pct >= 0 ? "pos" : "neg";
+  cont.innerHTML = `
+  <div class="card">
+    <h3>Resultado do Backtesting ML</h3>
+    <div class="risk-grid">
+      <div class="risk-item"><span class="risk-label">Apostas realizadas</span><span class="risk-val">${d.n_bets}</span></div>
+      <div class="risk-item"><span class="risk-label">Win rate</span><span class="risk-val">${pct(d.win_rate)}</span></div>
+      <div class="risk-item"><span class="risk-label">Yield</span><span class="risk-val ${yieldCls}">${d.yield_pct >= 0 ? "+" : ""}${d.yield_pct.toFixed(2)}%</span></div>
+      <div class="risk-item"><span class="risk-label">ROI banca</span><span class="risk-val ${d.roi_pct >= 0 ? "pos" : "neg"}">${d.roi_pct >= 0 ? "+" : ""}${d.roi_pct.toFixed(2)}%</span></div>
+      <div class="risk-item"><span class="risk-label">Banca final</span><span class="risk-val">${d.bankroll_final.toFixed(2)}</span></div>
+      <div class="risk-item"><span class="risk-label">Drawdown máx.</span><span class="risk-val ${d.max_drawdown_pct > 30 ? "neg" : ""}">${d.max_drawdown_pct.toFixed(1)}%</span></div>
+      <div class="risk-item"><span class="risk-label">EV médio</span><span class="risk-val">${(d.avg_ev * 100).toFixed(2)}%</span></div>
+      <div class="risk-item"><span class="risk-label">Odd média</span><span class="risk-val">${d.avg_odd.toFixed(2)}</span></div>
+    </div>
+    <p class="hint">${esc(d.interpretation)}</p>
+    <div class="chart-wrap"><canvas id="mlBkChart" height="90"></canvas></div>
+  </div>`;
+
+  const curve = d.bankroll_curve || [];
+  const labels = curve.map((r) => r.date || "");
+  const values = curve.map((r) => r.bankroll);
+  const ctx = document.getElementById("mlBkChart");
+  if (_mlBtChart) _mlBtChart.destroy();
+  _mlBtChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Evolução da banca",
+        data: values,
+        borderColor: d.yield_pct >= 0 ? "#22c55e" : "#ef4444",
+        fill: true,
+        backgroundColor: d.yield_pct >= 0 ? "rgba(34,197,94,.1)" : "rgba(239,68,68,.1)",
+        tension: 0.3,
+        pointRadius: values.length > 100 ? 0 : 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: false } },
+    },
+  });
+}
+
+// ── Boot ─────────────────────────────────────────────────────
+loadTeams();
