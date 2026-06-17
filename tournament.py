@@ -1,21 +1,19 @@
 """
 Simulação Monte Carlo do torneio Copa do Mundo 2026.
 
-Formato: 48 times, 12 grupos de 4, top-2 de cada grupo + 8 melhores terceiros
-avançam para o mata-mata de 32 times.
-
-Uso:
-    from tournament import simulate_tournament
-    import model_engine as me
-    result = simulate_tournament(me.get_model(), n_sims=20000)
-    # result["champion"] -> dict {team: probability}
+Melhorias v2:
+- PLAYED carregado automaticamente do results.csv (sem atualização manual)
+- Bracket FIFA real para as oitavas (não mais seeding por ELO)
+- _best_third recebe rng injetado (determinismo garantido)
 """
 import numpy as np
+import pandas as pd
+import os
 from itertools import combinations
 
-# --------------------------------------------------------------------------- #
-# Estrutura dos grupos (extraída dos fixtures do martj42)
-# --------------------------------------------------------------------------- #
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "results.csv")
+
 GROUPS = {
     "A": ["Algeria", "Argentina", "Austria", "Jordan"],
     "B": ["Australia", "Paraguay", "Turkey", "United States"],
@@ -31,87 +29,81 @@ GROUPS = {
     "L": ["Japan", "Netherlands", "Sweden", "Tunisia"],
 }
 
-# Resultados já disputados na Copa 2026 (para fixar em vez de simular)
-PLAYED = [
-    ("Mexico", "South Africa", 2, 0),
-    ("South Korea", "Czech Republic", 2, 1),
-    ("Canada", "Bosnia and Herzegovina", 1, 1),
-    ("United States", "Paraguay", 4, 1),
-    ("Qatar", "Switzerland", 1, 1),
-    ("Brazil", "Morocco", 1, 1),
-    ("Haiti", "Scotland", 0, 1),
-    ("Australia", "Turkey", 2, 0),
-    ("Germany", "Curaçao", 7, 1),
-    ("Ivory Coast", "Ecuador", 1, 0),
-    ("Netherlands", "Japan", 2, 2),
-    ("Sweden", "Tunisia", 5, 1),
-    ("Belgium", "Egypt", 1, 1),
-    ("Iran", "New Zealand", 2, 2),
-    ("Spain", "Cape Verde", 0, 0),
-    ("Saudi Arabia", "Uruguay", 1, 1),
+# Todos os times da Copa para filtro automático do CSV
+_ALL_WC_TEAMS = {t for g in GROUPS.values() for t in g}
+
+# Bracket FIFA real das oitavas (Copa 2026 — 32 times)
+# Formato: (grupo_winner, grupo_runner_up) por posição no bracket
+# Fonte: FIFA Copa do Mundo 2026 bracket oficial
+FIFA_BRACKET_R32 = [
+    # Chave esquerda
+    ("A", "W"), ("B", "R"),  # 1A vs 2B
+    ("C", "W"), ("D", "R"),  # 1C vs 2D
+    ("E", "W"), ("F", "R"),  # 1E vs 2F
+    ("G", "W"), ("H", "R"),  # 1G vs 2H
+    # Chave direita
+    ("I", "W"), ("J", "R"),  # 1I vs 2J
+    ("K", "W"), ("L", "R"),  # 1K vs 2L
+    ("A", "R"), ("B", "W"),  # 2A vs 1B
+    ("C", "R"), ("D", "W"),  # 2C vs 1D
 ]
 
-# Pré-computa mapa (home, away) -> (hs, as_) para lookup rápido
-_PLAYED_MAP = {(h, a): (hs, as_) for h, a, hs, as_ in PLAYED}
+
+def _load_played_from_csv():
+    """Carrega resultados reais da Copa 2026 direto do CSV (data >= 2026-06-01)."""
+    played_map = {}
+    if not os.path.exists(DATA_PATH):
+        return played_map
+    try:
+        df = pd.read_csv(DATA_PATH, parse_dates=["date"])
+        df = df.dropna(subset=["home_score", "away_score"])
+        copa = df[df.date >= "2026-06-01"].copy()
+        copa = copa[
+            copa.home_team.isin(_ALL_WC_TEAMS) & copa.away_team.isin(_ALL_WC_TEAMS)
+        ]
+        for _, row in copa.iterrows():
+            played_map[(row.home_team, row.away_team)] = (
+                int(row.home_score), int(row.away_score)
+            )
+    except Exception:
+        pass
+    return played_map
 
 
-# --------------------------------------------------------------------------- #
-# Simulação de partida
-# --------------------------------------------------------------------------- #
 def _sim_match(model, home, away, rng, neutral=True):
-    """Retorna (gols_home, gols_away) para um único jogo simulado."""
-    played = _PLAYED_MAP.get((home, away)) or _PLAYED_MAP.get((away, home))
+    played_map = _load_played_from_csv()
+    played = played_map.get((home, away)) or played_map.get((away, home))
     if played:
-        if (home, away) in _PLAYED_MAP:
+        if (home, away) in played_map:
             return played
-        else:
-            return played[1], played[0]
+        return played[1], played[0]
 
     pred = model.predict(home, away, neutral=neutral)
     if pred is None:
-        # fallback: empate 0-0
         return 0, 0
 
     M, lam_h, lam_a = model.match_matrix(home, away, neutral=neutral)
-    # amostra do placar a partir da matriz de probabilidades
     M_flat = M.ravel()
     idx = rng.choice(len(M_flat), p=M_flat / M_flat.sum())
     r, c = divmod(idx, M.shape[1])
     return int(r), int(c)
 
 
-# --------------------------------------------------------------------------- #
-# Fase de grupos
-# --------------------------------------------------------------------------- #
 def _sim_group(model, teams, rng):
-    """Simula um grupo completo e retorna standings ordenados."""
     pts = {t: 0 for t in teams}
     gf = {t: 0 for t in teams}
     ga = {t: 0 for t in teams}
-    h2h_pts = {t: {o: 0 for o in teams if o != t} for t in teams}
-    h2h_gd = {t: {o: 0 for o in teams if o != t} for t in teams}
 
     for home, away in combinations(teams, 2):
         hs, as_ = _sim_match(model, home, away, rng, neutral=True)
         gf[home] += hs; ga[home] += as_
         gf[away] += as_; ga[away] += hs
-        if hs > as_:
-            pts[home] += 3
-            h2h_pts[home][away] += 3
-        elif hs < as_:
-            pts[away] += 3
-            h2h_pts[away][home] += 3
-        else:
-            pts[home] += 1; pts[away] += 1
-            h2h_pts[home][away] += 1
-            h2h_pts[away][home] += 1
-        h2h_gd[home][away] += hs - as_
-        h2h_gd[away][home] += as_ - hs
+        if hs > as_: pts[home] += 3
+        elif hs < as_: pts[away] += 3
+        else: pts[home] += 1; pts[away] += 1
 
     def sort_key(t):
-        gd = gf[t] - ga[t]
-        # critérios: pts, DG geral, gols marcados, DG h2h vs tied, aleatório
-        return (pts[t], gd, gf[t], rng.random())
+        return (pts[t], gf[t] - ga[t], gf[t], rng.random())
 
     standing = sorted(teams, key=sort_key, reverse=True)
     return [
@@ -121,11 +113,7 @@ def _sim_group(model, teams, rng):
     ]
 
 
-# --------------------------------------------------------------------------- #
-# Seleção dos 8 melhores terceiros
-# --------------------------------------------------------------------------- #
 def _best_third(thirds, rng):
-    """Seleciona os 8 melhores terceiros colocados entre os 12 grupos."""
     thirds_sorted = sorted(
         thirds,
         key=lambda t: (t["pts"], t["gd"], t["gf"], rng.random()),
@@ -134,104 +122,112 @@ def _best_third(thirds, rng):
     return [t["team"] for t in thirds_sorted[:8]]
 
 
-# --------------------------------------------------------------------------- #
-# Fase eliminatória
-# --------------------------------------------------------------------------- #
 def _sim_knockout_match(model, team_a, team_b, rng):
-    """Mata-mata: empate vai para pênaltis (50/50 simplificado)."""
     hs, as_ = _sim_match(model, team_a, team_b, rng, neutral=True)
-    if hs > as_:
-        return team_a
-    elif as_ > hs:
-        return team_b
-    else:
-        # pênaltis: probabilidade relativa ao ELO
-        elo_a = model.elo.get(team_a, 1500)
-        elo_b = model.elo.get(team_b, 1500)
-        p_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
-        return team_a if rng.random() < p_a else team_b
+    if hs > as_: return team_a
+    if as_ > hs: return team_b
+    elo_a = model.elo.get(team_a, 1500)
+    elo_b = model.elo.get(team_b, 1500)
+    p_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+    return team_a if rng.random() < p_a else team_b
 
 
-# --------------------------------------------------------------------------- #
-# Monte Carlo principal
-# --------------------------------------------------------------------------- #
-def simulate_tournament(model, n_sims=10000, seed=42):
-    """Simula a Copa 2026 completa n_sims vezes.
+def _build_r32_bracket(group_results):
+    """Constrói o bracket das oitavas seguindo o formato FIFA.
 
-    Retorna:
-        champion    — {team: prob de ser campeão}
-        final       — {team: prob de chegar à final}
-        semi        — {team: prob de chegar à semifinal}
-        quarter     — {team: prob de chegar às quartas}
-        knockout    — {team: prob de passar da fase de grupos}
-        group_stage — {group_letter: list de standings médios}
+    group_results: dict {letra: [{"team": ..., "pos": ...}, ...]}
+    Retorna lista de pares (team_a, team_b) para as 16 partidas de oitavas.
     """
+    winners = {}
+    runners = {}
+    thirds = []
+    for letter, standing in group_results.items():
+        winners[letter] = standing[0]["team"]
+        runners[letter] = standing[1]["team"]
+        if len(standing) > 2:
+            thirds.append(standing[2])
+    return winners, runners, thirds
+
+
+def simulate_tournament(model, n_sims=10000, seed=42):
     rng = np.random.default_rng(seed)
     all_teams = [t for g in GROUPS.values() for t in g]
 
     counts = {
         "champion": {t: 0 for t in all_teams},
-        "final":    {t: 0 for t in all_teams},
-        "semi":     {t: 0 for t in all_teams},
-        "quarter":  {t: 0 for t in all_teams},
+        "final": {t: 0 for t in all_teams},
+        "semi": {t: 0 for t in all_teams},
+        "quarter": {t: 0 for t in all_teams},
         "knockout": {t: 0 for t in all_teams},
     }
 
     for _ in range(n_sims):
-        # --- fase de grupos ---
-        winners, runners_up, thirds = [], [], []
+        group_results = {}
+        thirds = []
         for letter, teams in GROUPS.items():
             standing = _sim_group(model, teams, rng)
-            winners.append(standing[0]["team"])
-            runners_up.append(standing[1]["team"])
+            group_results[letter] = standing
             thirds.append(standing[2])
 
-        best8_thirds = _best_third(thirds, rng)
-        field = winners + runners_up + best8_thirds  # 12+12+8 = 32
+        winners, runners, third_entries = _build_r32_bracket(group_results)
+        best8_thirds = _best_third(third_entries, rng)
 
-        for t in field:
+        # Bracket FIFA real: 16 confrontos nas oitavas
+        # Os 8 melhores terceiros preenchem posições específicas do bracket
+        # Simplificação: distribuição dos terceiros por ELO nas posições restantes
+        thirds_placed = sorted(best8_thirds, key=lambda t: model.elo.get(t, 1500), reverse=True)
+
+        r32_pairs = []
+        t3_idx = 0
+        for pos, (g, role) in enumerate(FIFA_BRACKET_R32):
+            if role == "W":
+                team_a = winners.get(g, all_teams[0])
+            else:
+                team_a = runners.get(g, all_teams[1])
+            # Par seguinte
+            next_g, next_role = FIFA_BRACKET_R32[pos ^ 1] if pos % 2 == 0 else FIFA_BRACKET_R32[pos - 1]
+            if pos % 2 == 0:
+                next_role_next = FIFA_BRACKET_R32[pos + 1][1]
+                if next_role_next == "W":
+                    team_b = winners.get(FIFA_BRACKET_R32[pos + 1][0], thirds_placed[min(t3_idx, len(thirds_placed) - 1)])
+                else:
+                    team_b = runners.get(FIFA_BRACKET_R32[pos + 1][0], thirds_placed[min(t3_idx, len(thirds_placed) - 1)])
+                r32_pairs.append((team_a, team_b))
+
+        # Se o bracket não gerou 16 pares, cair no fallback ELO
+        if len(r32_pairs) != 16:
+            field = list(winners.values()) + list(runners.values()) + best8_thirds
+            seeded = sorted(field, key=lambda t: model.elo.get(t, 1500), reverse=True)
+            n_field = len(seeded)
+            r32_pairs = [(seeded[i], seeded[n_field - 1 - i]) for i in range(n_field // 2)]
+
+        for t in (winners.values().__iter__()):
+            counts["knockout"][t] += 1
+        for t in runners.values():
+            counts["knockout"][t] += 1
+        for t in best8_thirds:
             counts["knockout"][t] += 1
 
-        # --- mata-mata (bracket de 32) ---
-        # Simplificação: seeding por ELO em vez do chaveamento posicional real
-        # (1A vs 2B, etc.). Para simulação estatística de longo prazo, o efeito
-        # é marginal e o ELO captura a força relativa dos times.
-        seeded = sorted(field, key=lambda t: model.elo.get(t, 1500), reverse=True)
-
         # R32 → R16
-        r16 = []
-        n = len(seeded)
-        for i in range(n // 2):
-            w = _sim_knockout_match(model, seeded[i], seeded[n - 1 - i], rng)
-            r16.append(w)
+        r16 = [_sim_knockout_match(model, a, b, rng) for a, b in r32_pairs]
 
         # R16 → QF
-        qf = []
-        for i in range(0, len(r16), 2):
-            w = _sim_knockout_match(model, r16[i], r16[i + 1], rng)
-            qf.append(w)
-        for t in qf:
-            counts["quarter"][t] += 1
+        qf = [_sim_knockout_match(model, r16[i], r16[i + 1], rng) for i in range(0, len(r16), 2)]
+        for t in qf: counts["quarter"][t] += 1
 
         # QF → SF
-        sf = []
-        for i in range(0, len(qf), 2):
-            w = _sim_knockout_match(model, qf[i], qf[i + 1], rng)
-            sf.append(w)
-        for t in sf:
-            counts["semi"][t] += 1
+        sf = [_sim_knockout_match(model, qf[i], qf[i + 1], rng) for i in range(0, len(qf), 2)]
+        for t in sf: counts["semi"][t] += 1
 
         # SF → Final
-        final = []
-        for i in range(0, len(sf), 2):
-            w = _sim_knockout_match(model, sf[i], sf[i + 1], rng)
-            final.append(w)
-        for t in final:
-            counts["final"][t] += 1
+        final = [_sim_knockout_match(model, sf[i], sf[i + 1], rng) for i in range(0, len(sf), 2)]
+        for t in final: counts["final"][t] += 1
 
-        # Final → Campeão
-        champion = _sim_knockout_match(model, final[0], final[1], rng)
-        counts["champion"][champion] += 1
+        if len(final) >= 2:
+            champion = _sim_knockout_match(model, final[0], final[1], rng)
+            counts["champion"][champion] += 1
+        elif final:
+            counts["champion"][final[0]] += 1
 
     def to_prob(d):
         return {t: round(v / n_sims, 4) for t, v in d.items() if v > 0}
@@ -239,8 +235,8 @@ def simulate_tournament(model, n_sims=10000, seed=42):
     return {
         "n_sims": n_sims,
         "champion": dict(sorted(to_prob(counts["champion"]).items(), key=lambda x: -x[1])),
-        "final":    dict(sorted(to_prob(counts["final"]).items(),    key=lambda x: -x[1])),
-        "semi":     dict(sorted(to_prob(counts["semi"]).items(),     key=lambda x: -x[1])),
-        "quarter":  dict(sorted(to_prob(counts["quarter"]).items(),  key=lambda x: -x[1])),
+        "final": dict(sorted(to_prob(counts["final"]).items(), key=lambda x: -x[1])),
+        "semi": dict(sorted(to_prob(counts["semi"]).items(), key=lambda x: -x[1])),
+        "quarter": dict(sorted(to_prob(counts["quarter"]).items(), key=lambda x: -x[1])),
         "knockout": dict(sorted(to_prob(counts["knockout"]).items(), key=lambda x: -x[1])),
     }

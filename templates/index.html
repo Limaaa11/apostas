@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Modelo de Seleções — Previsão & Gestão de Banca</title>
-  <link rel="stylesheet" href="../static/style.css">
+  <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -16,14 +16,18 @@
     <div id="model-info" class="model-info">carregando modelo…</div>
   </header>
 
-  <nav class="tabs">
+  <nav class="tabs" id="main-tabs">
     <button class="tab active" data-tab="prev">📊 Previsão</button>
     <button class="tab" data-tab="mercados">📋 Mercados</button>
     <button class="tab" data-tab="live">🔴 Ao Vivo</button>
     <button class="tab" data-tab="value">💰 Value Bets</button>
+    <button class="tab" data-tab="alertas">🔔 Alertas</button>
     <button class="tab" data-tab="banca">🛡️ Gestão de Banca</button>
     <button class="tab" data-tab="hist">📒 Histórico</button>
+    <button class="tab" data-tab="clv">📈 CLV Tracker</button>
     <button class="tab" data-tab="rank">🏆 Ranking</button>
+    <button class="tab" data-tab="calibracao">🎯 Calibração</button>
+    <button class="tab" data-tab="ml">🧠 Modelo ML</button>
     <button class="tab" data-tab="agente">🤖 Agente IA</button>
   </nav>
 
@@ -43,7 +47,20 @@
           <label><input type="checkbox" id="p-neutral" checked> Campo neutro</label>
         </div>
         <button class="primary" id="p-go">Calcular</button>
+        <button class="secondary" id="p-ci">+ Intervalos de Confiança</button>
       </div>
+      <!-- Blend com odds do mercado -->
+      <details class="card blend-card">
+        <summary>🔀 Blend com odds da casa (melhora calibração)</summary>
+        <div class="controls wrap" style="margin-top:12px">
+          <div class="field sm"><label>Odd Casa (1)</label><input type="number" step="0.01" id="bl-oh" placeholder="2.30"></div>
+          <div class="field sm"><label>Odd Empate (X)</label><input type="number" step="0.01" id="bl-od" placeholder="3.20"></div>
+          <div class="field sm"><label>Odd Fora (2)</label><input type="number" step="0.01" id="bl-oa" placeholder="3.10"></div>
+          <div class="field sm"><label>Peso modelo (α)</label><input type="number" step="0.05" id="bl-alpha" value="0.6" min="0" max="1"></div>
+          <button class="secondary" id="bl-go">Calcular blend</button>
+        </div>
+        <div id="blend-result"></div>
+      </details>
       <div id="prev-result"></div>
     </section>
 
@@ -64,7 +81,7 @@
         <button class="primary" id="m-go">Ver todos os mercados</button>
       </div>
       <p class="hint" style="margin:0 0 12px">
-        Digite a odd da casa em cada linha para ver o <b>EV</b> e as melhores apostas automaticamente. Odd justa = sem margem da casa.
+        Digite a odd da casa em cada linha para ver o <b>EV</b> automaticamente. Odd justa = sem margem da casa.
       </p>
       <div id="mercados-result"></div>
     </section>
@@ -81,13 +98,12 @@
           <button class="secondary" id="api-save">Salvar chave</button>
           <span class="hint inline" id="api-status">Sem chave salva.</span>
         </div>
-        <p class="hint">A chave fica <b>apenas no seu navegador</b> (localStorage) e é enviada ao backend só para consultar a API. Crie a chave grátis em <code>dashboard.api-football.com</code> (100 req/dia no plano free).</p>
+        <p class="hint">A chave fica <b>apenas no seu navegador</b> (sessionStorage) e é enviada ao backend só para consultar a API. Crie a chave grátis em <code>dashboard.api-football.com</code> (100 req/dia no plano free). Respostas ficam em cache por 30s (ao vivo) ou 5min (agendados).</p>
       </div>
-
       <div class="card">
         <div class="live-controls">
           <button class="primary" id="live-now">🔴 Jogos ao vivo agora</button>
-          <button class="secondary" id="live-wc">🏆 Copa do Mundo 2026 (próximos)</button>
+          <button class="secondary" id="live-wc">🏆 Copa do Mundo 2026</button>
           <div class="field sm"><label>Por data</label><input type="date" id="live-date"></div>
           <button class="secondary" id="live-bydate">Buscar data</button>
           <label class="check inline"><input type="checkbox" id="live-known" checked> só seleções do modelo</label>
@@ -119,8 +135,26 @@
         <div class="field sm"><label>Odd Fora (2)</label><input type="number" step="0.01" id="v-oa" placeholder="3.10"></div>
         <button class="primary" id="v-go">Analisar EV</button>
       </div>
-      <p class="hint">EV = probabilidade do modelo × odd − 1. <b>EV &gt; 0</b> = aposta de valor (a longo prazo). Odds de casas com margem baixa (Pinnacle/Betfair) dão leitura mais confiável.</p>
+      <p class="hint">EV = probabilidade do modelo × odd − 1. <b>EV &gt; 0</b> = aposta de valor. Odds Pinnacle/Betfair dão leitura mais confiável.</p>
       <div id="value-result"></div>
+    </section>
+
+    <!-- ABA ALERTAS -->
+    <section id="tab-alertas" class="panel">
+      <div class="card">
+        <h3>🔔 Varredura de Value Bets</h3>
+        <p class="hint">Cole confrontos e odds para varrer automaticamente e detectar os com EV positivo acima do threshold.</p>
+        <div class="controls wrap">
+          <div class="field sm"><label>EV mínimo (%)</label><input type="number" step="0.5" id="al-minev" value="3"></div>
+          <div class="field check"><label><input type="checkbox" id="al-neutral" checked> Campo neutro</label></div>
+          <button class="primary" id="al-scan">🔍 Varrer jogos</button>
+          <button class="secondary" id="al-add-row">+ Adicionar confronto</button>
+        </div>
+        <div id="alertas-rows" class="alert-rows">
+          <!-- linhas adicionadas dinamicamente -->
+        </div>
+      </div>
+      <div id="alertas-result"></div>
     </section>
 
     <!-- ABA GESTÃO DE BANCA -->
@@ -147,19 +181,18 @@
             <input type="file" id="b-csv" accept=".csv" hidden>
           </label>
           <a href="#" id="b-csv-template" class="link">baixar modelo CSV</a>
-          <span class="hint inline">Colunas: <code>home,away,side,odd,neutral</code> (side = 1/X/2) ou <code>home,away,odd_H,odd_D,odd_A,neutral</code> (escolhe o maior EV).</span>
+          <span class="hint inline">Colunas: <code>home,away,side,odd,neutral</code> ou <code>home,away,odd_H,odd_D,odd_A</code></span>
         </div>
-        <table class="bets-table" id="bets-table">
+        <table class="bets-table" id="bets-table" style="display:none">
           <thead><tr><th>Aposta</th><th>P(modelo)</th><th>Odd</th><th>EV</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="hint" id="bets-empty">Nenhuma aposta ainda. A probabilidade vem do modelo automaticamente.</p>
+        <p class="hint" id="bets-empty">Nenhuma aposta ainda.</p>
         <div style="display:flex;gap:10px;margin-top:8px">
           <button class="secondary" id="b-clear" style="display:none">Limpar lista</button>
-          <button class="secondary" id="b-to-hist" style="display:none">📒 Registrar todas no histórico</button>
+          <button class="secondary" id="b-to-hist" style="display:none">📒 Registrar no histórico</button>
         </div>
       </div>
-
       <div class="card">
         <h3>2. Parâmetros da banca</h3>
         <div class="controls wrap">
@@ -184,9 +217,7 @@
           <div class="field sm"><label>EV mínimo (%)</label><input type="number" step="0.5" id="bk-minedge" value="0"></div>
           <button class="primary" id="bk-go">Simular risco (Monte Carlo)</button>
         </div>
-        <p class="hint">Simulamos milhares de cenários reordenando vitórias/derrotas conforme as probabilidades do modelo — mostra o leque de resultados, não um número mágico.</p>
       </div>
-
       <div id="banca-result"></div>
     </section>
 
@@ -196,12 +227,12 @@
         <h3>Resumo da banca</h3>
         <div class="controls wrap" style="margin-bottom:14px">
           <div class="field sm"><label>Banca inicial</label><input type="number" id="h-start" value="100"></div>
+          <button class="secondary" id="h-export-csv">📤 Exportar CSV</button>
           <button class="secondary" id="h-reset">Zerar histórico</button>
         </div>
         <div class="risk-grid" id="hist-summary"></div>
         <div class="chart-wrap"><canvas id="histChart" height="100"></canvas></div>
       </div>
-
       <div class="card">
         <h3>Registrar aposta manualmente</h3>
         <div class="controls wrap">
@@ -212,14 +243,57 @@
           <button class="secondary" id="h-add">+ Adicionar</button>
         </div>
       </div>
-
       <div class="card">
         <h3>Apostas registradas</h3>
-        <table id="hist-table">
+        <table id="hist-table" style="display:none">
           <thead><tr><th>Data</th><th>Aposta</th><th>Odd</th><th>Stake</th><th>EV</th><th>Status</th><th>Resultado</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="hint" id="hist-empty">Nenhuma aposta registrada ainda. Use o formulário acima ou "Registrar todas no histórico" na aba Gestão de Banca.</p>
+        <p class="hint" id="hist-empty">Nenhuma aposta registrada ainda.</p>
+      </div>
+    </section>
+
+    <!-- ABA CLV TRACKER -->
+    <section id="tab-clv" class="panel">
+      <div class="card">
+        <h3>📈 Closing Line Value Tracker</h3>
+        <p class="hint">Registre a odd de entrada e a odd de fechamento para medir se você está apostando melhor que o mercado. CLV positivo = edge real.</p>
+        <div class="controls wrap">
+          <div class="field grow"><label>Jogo</label><input id="clv-match" placeholder="Brazil x Argentina"></div>
+          <div class="field sm">
+            <label>Lado</label>
+            <select id="clv-side">
+              <option value="H">Casa (1)</option>
+              <option value="D">Empate (X)</option>
+              <option value="A">Fora (2)</option>
+            </select>
+          </div>
+          <div class="field sm"><label>Odd entrada</label><input type="number" step="0.01" id="clv-entry" placeholder="2.30"></div>
+          <div class="field sm"><label>Odd fechamento</label><input type="number" step="0.01" id="clv-closing" placeholder="2.10"></div>
+          <div class="field sm"><label>Stake</label><input type="number" step="0.01" id="clv-stake" placeholder="10.00"></div>
+          <div class="field sm">
+            <label>Resultado</label>
+            <select id="clv-result">
+              <option value="">Pendente</option>
+              <option value="W">Ganhou (W)</option>
+              <option value="L">Perdeu (L)</option>
+              <option value="V">Void (V)</option>
+            </select>
+          </div>
+          <button class="secondary" id="clv-add">+ Registrar</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <button class="secondary" id="clv-refresh">🔄 Atualizar stats</button>
+          <a href="/api/clv/export" class="secondary-link">📥 Exportar CSV</a>
+        </div>
+      </div>
+      <div id="clv-stats-panel"></div>
+      <div class="card" id="clv-table-card" style="display:none">
+        <h3>Apostas registradas</h3>
+        <table id="clv-table">
+          <thead><tr><th>Data</th><th>Jogo</th><th>Lado</th><th>Entrada</th><th>Fechamento</th><th>CLV%</th><th>Stake</th><th>Resultado</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
@@ -234,13 +308,95 @@
         </table>
       </div>
     </section>
+
+    <!-- ABA CALIBRAÇÃO -->
+    <section id="tab-calibracao" class="panel">
+      <div class="card">
+        <h3>🎯 Backtesting e Calibração do Modelo</h3>
+        <p class="hint">Compara as previsões do modelo com resultados reais. Um modelo bem calibrado tem P(previsão = 60%) ≈ 60% de frequência real.</p>
+        <div class="controls wrap">
+          <div class="field sm"><label>Período — de</label><input type="date" id="bt-from" value="2023-01-01"></div>
+          <div class="field sm"><label>até</label><input type="date" id="bt-to" value="2024-12-31"></div>
+          <div class="field sm"><label>Amostra (jogos)</label><input type="number" id="bt-sample" value="500" min="50" max="2000"></div>
+          <button class="primary" id="bt-run">▶ Rodar backtesting</button>
+        </div>
+        <div id="bt-result"></div>
+      </div>
+    </section>
+
+    <!-- ABA MODELO ML -->
+    <section id="tab-ml" class="panel">
+      <div class="card">
+        <h3>🧠 Modelo ML — XGBoost + Rolling Features</h3>
+        <p class="hint">
+          Abordagem complementar ao Dixon-Coles: usa médias móveis (últimas 3/5/10 partidas),
+          forma mandante/visitante e fadiga (dias de descanso) para calibrar probabilidades via XGBoost.
+          O treino completo pode levar <b>5–10 minutos</b> na primeira vez.
+        </p>
+        <div class="controls wrap">
+          <button class="primary" id="ml-train">⚙️ Treinar modelo ML</button>
+          <button class="secondary" id="ml-train-force">🔁 Re-treinar (forçar)</button>
+          <span id="ml-train-status" class="hint inline"></span>
+        </div>
+        <div id="ml-meta-panel"></div>
+      </div>
+
+      <div class="card">
+        <h3>Previsão 1X2 via XGBoost</h3>
+        <div class="controls wrap">
+          <div class="field"><label>Mandante</label><input list="teams" id="ml-home" placeholder="ex: Brazil"></div>
+          <div class="field"><label>Visitante</label><input list="teams" id="ml-away" placeholder="ex: Argentina"></div>
+          <div class="field check"><label><input type="checkbox" id="ml-neutral" checked> Campo neutro</label></div>
+        </div>
+        <div class="controls wrap" style="margin-top:10px">
+          <div class="field sm"><label>Odd Casa (1)</label><input type="number" step="0.01" id="ml-oh" placeholder="opcional"></div>
+          <div class="field sm"><label>Odd Empate (X)</label><input type="number" step="0.01" id="ml-od" placeholder="opcional"></div>
+          <div class="field sm"><label>Odd Fora (2)</label><input type="number" step="0.01" id="ml-oa" placeholder="opcional"></div>
+          <div class="field sm"><label>EV mínimo (%)</label><input type="number" step="0.5" id="ml-minev" value="3"></div>
+          <button class="primary" id="ml-predict">Prever</button>
+        </div>
+        <p class="hint">Cole as odds da casa para ver automaticamente quais têm value (EV positivo).</p>
+        <div id="ml-predict-result"></div>
+      </div>
+
+      <div class="card">
+        <h3>Backtesting Financeiro (TimeSeriesSplit)</h3>
+        <p class="hint">
+          Simula apostas ao longo do tempo dividindo o histórico em folds temporais.
+          Calcula Yield real, evolução da banca e Kelly fracionado.
+        </p>
+        <div class="controls wrap">
+          <div class="field sm"><label>Banca inicial</label><input type="number" id="ml-bk" value="100"></div>
+          <div class="field sm">
+            <label>Estratégia de stake</label>
+            <select id="ml-stake-type">
+              <option value="kelly">Kelly 1/4 (recomendado)</option>
+              <option value="flat">Stake fixo (%)</option>
+            </select>
+          </div>
+          <div class="field sm hidden" id="ml-flat-wrap"><label>Stake fixo (%)</label><input type="number" step="0.5" id="ml-flat" value="2"></div>
+          <div class="field sm"><label>Kelly fração</label>
+            <select id="ml-kelly-f">
+              <option value="0.125">1/8 conservador</option>
+              <option value="0.25" selected>1/4 recomendado</option>
+              <option value="0.5">1/2 agressivo</option>
+            </select>
+          </div>
+          <div class="field sm"><label>EV mínimo (%)</label><input type="number" step="0.5" id="ml-bt-ev" value="3"></div>
+          <div class="field sm"><label>Folds temporais</label><input type="number" id="ml-splits" value="5" min="3" max="10"></div>
+          <button class="primary" id="ml-bt-run">▶ Rodar backtesting</button>
+        </div>
+        <div id="ml-bt-result"></div>
+      </div>
+    </section>
+
     <!-- ABA AGENTE IA -->
     <section id="tab-agente" class="panel">
       <div class="card">
         <h3>🤖 Agente de Análise — Copa 2026</h3>
         <div class="controls wrap">
           <div class="field grow">
-            <label>Chave da API Anthropic (fica só no seu navegador)</label>
+            <label>Chave da API Anthropic (fica só na sessão do navegador)</label>
             <input type="password" id="ag-key" placeholder="sk-ant-...">
           </div>
           <button class="secondary" id="ag-save-key">Salvar chave</button>
@@ -248,7 +404,7 @@
         </div>
         <p class="hint" style="margin:6px 0 0">
           O agente usa o modelo estatístico do sistema para analisar jogos, varrer mercados,
-          simular o torneio e calcular stakes. Exemplos de perguntas:
+          simular o torneio e calcular stakes.
         </p>
         <div class="agent-examples">
           <button class="example-btn" onclick="sendExample(this)">Analise França x Senegal e diga onde está o valor</button>
@@ -257,7 +413,6 @@
           <button class="example-btn" onclick="sendExample(this)">Liste os 10 times mais fortes da Copa 2026</button>
         </div>
       </div>
-
       <div class="card agent-chat-card">
         <div id="agent-messages" class="agent-messages">
           <div class="agent-msg system">
@@ -284,6 +439,6 @@
   <datalist id="teams"></datalist>
   <div id="toast" class="toast"></div>
 
-  <script src="../static/app.js"></script>
+  <script src="/static/app.js"></script>
 </body>
 </html>

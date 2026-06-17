@@ -7,6 +7,7 @@ manda no header de cada request; aqui ela só é repassada para a API-Football.
 Tudo é normalizado para um formato único e cruzado com a previsão do modelo
 Dixon-Coles (quando os dois times são seleções conhecidas pela base).
 """
+import time
 import difflib
 import requests
 
@@ -15,6 +16,14 @@ import model_engine as me
 API_BASE = "https://v3.football.api-sports.io"
 WORLD_CUP_LEAGUE_ID = 1          # "World Cup" na API-Football
 TIMEOUT = 20
+
+# Cache de respostas da API-Football: evita consumir as 100 req/dia no plano free
+_API_CACHE = {}   # key -> (timestamp, data)
+_CACHE_TTL = {
+    "live": 30,      # jogos ao vivo: 30s
+    "upcoming": 300, # próximos jogos: 5min
+    "date": 300,
+}
 
 # Status da API-Football -> rótulo + se está em andamento (ao vivo)
 _STATUS = {
@@ -102,10 +111,18 @@ def _headers(api_key):
     return {"x-apisports-key": api_key}
 
 
-def _request(path, api_key, params=None):
-    """Chamada genérica à API-Football com tratamento de erro amigável."""
+def _request(path, api_key, params=None, cache_kind=None):
+    """Chamada genérica à API-Football com cache e tratamento de erro amigável."""
     if not api_key:
         return None, "Faltou a chave da API-Football. Cole sua chave no campo acima."
+
+    cache_key = (path, str(sorted((params or {}).items())), api_key[:8])
+    ttl = _CACHE_TTL.get(cache_kind, 0)
+    if ttl > 0 and cache_key in _API_CACHE:
+        ts, cached = _API_CACHE[cache_key]
+        if time.time() - ts < ttl:
+            return cached, None
+
     try:
         r = requests.get(f"{API_BASE}/{path}", headers=_headers(api_key),
                          params=params or {}, timeout=TIMEOUT)
@@ -123,7 +140,6 @@ def _request(path, api_key, params=None):
 
     errors = data.get("errors")
     if errors:
-        # errors pode ser dict {campo: msg} ou lista
         if isinstance(errors, dict) and errors:
             msg = "; ".join(f"{k}: {v}" for k, v in errors.items())
         elif isinstance(errors, list) and errors:
@@ -132,7 +148,10 @@ def _request(path, api_key, params=None):
             msg = None
         if msg:
             return None, f"API-Football: {msg}"
-    return data.get("response", []), None
+    result = data.get("response", [])
+    if ttl > 0:
+        _API_CACHE[cache_key] = (time.time(), result)
+    return result, None
 
 
 def _normalize(fixtures, matcher, model):
@@ -191,7 +210,7 @@ def _normalize(fixtures, matcher, model):
 
 
 def live_matches(api_key, only_known=False):
-    raw, err = _request("fixtures", api_key, {"live": "all"})
+    raw, err = _request("fixtures", api_key, {"live": "all"}, cache_kind="live")
     if err:
         return None, err
     model = me.get_model()
@@ -204,19 +223,19 @@ def live_matches(api_key, only_known=False):
 
 def upcoming_world_cup(api_key, season=2026):
     raw, err = _request("fixtures", api_key,
-                        {"league": WORLD_CUP_LEAGUE_ID, "season": season})
+                        {"league": WORLD_CUP_LEAGUE_ID, "season": season},
+                        cache_kind="upcoming")
     if err:
         return None, err
     model = me.get_model()
     matcher = TeamMatcher(model)
     games = _normalize(raw, matcher, model)
-    # só os que ainda não terminaram
     games = [g for g in games if not g["is_done"]]
     return games, None
 
 
 def matches_by_date(api_key, date_str, only_known=False):
-    raw, err = _request("fixtures", api_key, {"date": date_str})
+    raw, err = _request("fixtures", api_key, {"date": date_str}, cache_kind="date")
     if err:
         return None, err
     model = me.get_model()
