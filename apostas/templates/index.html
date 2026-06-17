@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Modelo de Seleções — Previsão & Gestão de Banca</title>
+  <link rel="stylesheet" href="../static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>⚽ Modelo de Seleções</h1>
+      <span class="sub">Dixon-Coles + gestão de banca/risco</span>
+    </div>
+    <div id="model-info" class="model-info">carregando modelo…</div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="prev">📊 Previsão</button>
+    <button class="tab" data-tab="live">🔴 Ao Vivo</button>
+    <button class="tab" data-tab="value">💰 Value Bets</button>
+    <button class="tab" data-tab="banca">🛡️ Gestão de Banca</button>
+    <button class="tab" data-tab="hist">📒 Histórico</button>
+    <button class="tab" data-tab="rank">🏆 Ranking</button>
+  </nav>
+
+  <main>
+    <!-- ABA PREVISÃO -->
+    <section id="tab-prev" class="panel active">
+      <div class="card controls">
+        <div class="field">
+          <label>Mandante</label>
+          <input list="teams" id="p-home" placeholder="ex: Brazil">
+        </div>
+        <div class="field">
+          <label>Visitante</label>
+          <input list="teams" id="p-away" placeholder="ex: Argentina">
+        </div>
+        <div class="field check">
+          <label><input type="checkbox" id="p-neutral" checked> Campo neutro</label>
+        </div>
+        <button class="primary" id="p-go">Calcular</button>
+      </div>
+      <div id="prev-result"></div>
+    </section>
+
+    <!-- ABA AO VIVO -->
+    <section id="tab-live" class="panel">
+      <div class="card">
+        <h3>Conexão com a API-Football</h3>
+        <div class="controls wrap">
+          <div class="field grow">
+            <label>Sua chave da API-Football (api-sports.io)</label>
+            <input type="password" id="api-key" placeholder="cole aqui sua chave (fica salva só no seu navegador)">
+          </div>
+          <button class="secondary" id="api-save">Salvar chave</button>
+          <span class="hint inline" id="api-status">Sem chave salva.</span>
+        </div>
+        <p class="hint">A chave fica <b>apenas no seu navegador</b> (localStorage) e é enviada ao backend só para consultar a API. Crie a chave grátis em <code>dashboard.api-football.com</code> (100 req/dia no plano free).</p>
+      </div>
+
+      <div class="card">
+        <div class="live-controls">
+          <button class="primary" id="live-now">🔴 Jogos ao vivo agora</button>
+          <button class="secondary" id="live-wc">🏆 Copa do Mundo 2026 (próximos)</button>
+          <div class="field sm"><label>Por data</label><input type="date" id="live-date"></div>
+          <button class="secondary" id="live-bydate">Buscar data</button>
+          <label class="check inline"><input type="checkbox" id="live-known" checked> só seleções do modelo</label>
+          <label class="check inline"><input type="checkbox" id="live-auto"> auto-atualizar (30s)</label>
+        </div>
+        <p class="hint" id="live-meta"></p>
+        <div class="table-scroll">
+          <table class="live-table" id="live-table">
+            <thead><tr>
+              <th>Status</th><th>Hora</th><th>Competição</th><th>Jogo</th>
+              <th>Placar</th><th>P(1)</th><th>P(X)</th><th>P(2)</th>
+              <th>Placar provável</th><th>Leitura do modelo</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="hint" id="live-empty">Salve sua chave e clique em um dos botões acima.</p>
+      </div>
+    </section>
+
+    <!-- ABA VALUE BETS -->
+    <section id="tab-value" class="panel">
+      <div class="card controls wrap">
+        <div class="field"><label>Mandante</label><input list="teams" id="v-home" placeholder="Brazil"></div>
+        <div class="field"><label>Visitante</label><input list="teams" id="v-away" placeholder="Argentina"></div>
+        <div class="field check"><label><input type="checkbox" id="v-neutral" checked> Neutro</label></div>
+        <div class="field sm"><label>Odd Casa (1)</label><input type="number" step="0.01" id="v-oh" placeholder="2.30"></div>
+        <div class="field sm"><label>Odd Empate (X)</label><input type="number" step="0.01" id="v-od" placeholder="3.20"></div>
+        <div class="field sm"><label>Odd Fora (2)</label><input type="number" step="0.01" id="v-oa" placeholder="3.10"></div>
+        <button class="primary" id="v-go">Analisar EV</button>
+      </div>
+      <p class="hint">EV = probabilidade do modelo × odd − 1. <b>EV &gt; 0</b> = aposta de valor (a longo prazo). Odds de casas com margem baixa (Pinnacle/Betfair) dão leitura mais confiável.</p>
+      <div id="value-result"></div>
+    </section>
+
+    <!-- ABA GESTÃO DE BANCA -->
+    <section id="tab-banca" class="panel">
+      <div class="card">
+        <h3>1. Monte sua lista de apostas</h3>
+        <div class="controls wrap">
+          <div class="field"><label>Mandante</label><input list="teams" id="b-home" placeholder="Brazil"></div>
+          <div class="field"><label>Visitante</label><input list="teams" id="b-away" placeholder="Argentina"></div>
+          <div class="field check"><label><input type="checkbox" id="b-neutral" checked> Neutro</label></div>
+          <div class="field sm">
+            <label>Lado</label>
+            <select id="b-side">
+              <option value="H">Casa (1)</option>
+              <option value="D">Empate (X)</option>
+              <option value="A">Fora (2)</option>
+            </select>
+          </div>
+          <div class="field sm"><label>Odd da casa</label><input type="number" step="0.01" id="b-odd" placeholder="2.50"></div>
+          <button class="secondary" id="b-add">+ Adicionar aposta</button>
+        </div>
+        <div class="import-row">
+          <label class="file-label">📂 Importar CSV
+            <input type="file" id="b-csv" accept=".csv" hidden>
+          </label>
+          <a href="#" id="b-csv-template" class="link">baixar modelo CSV</a>
+          <span class="hint inline">Colunas: <code>home,away,side,odd,neutral</code> (side = 1/X/2) ou <code>home,away,odd_H,odd_D,odd_A,neutral</code> (escolhe o maior EV).</span>
+        </div>
+        <table class="bets-table" id="bets-table">
+          <thead><tr><th>Aposta</th><th>P(modelo)</th><th>Odd</th><th>EV</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint" id="bets-empty">Nenhuma aposta ainda. A probabilidade vem do modelo automaticamente.</p>
+        <div style="display:flex;gap:10px;margin-top:8px">
+          <button class="secondary" id="b-clear" style="display:none">Limpar lista</button>
+          <button class="secondary" id="b-to-hist" style="display:none">📒 Registrar todas no histórico</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>2. Parâmetros da banca</h3>
+        <div class="controls wrap">
+          <div class="field sm"><label>Banca inicial</label><input type="number" id="bk-amount" value="100"></div>
+          <div class="field sm">
+            <label>Estratégia</label>
+            <select id="bk-strategy">
+              <option value="kelly">Kelly fracionário</option>
+              <option value="flat">Stake fixo (%)</option>
+            </select>
+          </div>
+          <div class="field sm" id="bk-kelly-wrap">
+            <label>Fração de Kelly</label>
+            <select id="bk-kelly">
+              <option value="0.125">1/8 (conservador)</option>
+              <option value="0.25" selected>1/4 (recomendado)</option>
+              <option value="0.5">1/2 (agressivo)</option>
+              <option value="1">Cheio (arriscado)</option>
+            </select>
+          </div>
+          <div class="field sm hidden" id="bk-flat-wrap"><label>Stake fixo (%)</label><input type="number" step="0.5" id="bk-flat" value="2"></div>
+          <div class="field sm"><label>EV mínimo (%)</label><input type="number" step="0.5" id="bk-minedge" value="0"></div>
+          <button class="primary" id="bk-go">Simular risco (Monte Carlo)</button>
+        </div>
+        <p class="hint">Simulamos milhares de cenários reordenando vitórias/derrotas conforme as probabilidades do modelo — mostra o leque de resultados, não um número mágico.</p>
+      </div>
+
+      <div id="banca-result"></div>
+    </section>
+
+    <!-- ABA HISTÓRICO -->
+    <section id="tab-hist" class="panel">
+      <div class="card">
+        <h3>Resumo da banca</h3>
+        <div class="controls wrap" style="margin-bottom:14px">
+          <div class="field sm"><label>Banca inicial</label><input type="number" id="h-start" value="100"></div>
+          <button class="secondary" id="h-reset">Zerar histórico</button>
+        </div>
+        <div class="risk-grid" id="hist-summary"></div>
+        <div class="chart-wrap"><canvas id="histChart" height="100"></canvas></div>
+      </div>
+
+      <div class="card">
+        <h3>Registrar aposta manualmente</h3>
+        <div class="controls wrap">
+          <div class="field"><label>Descrição / jogo</label><input id="h-desc" placeholder="Brazil x Argentina — Empate"></div>
+          <div class="field sm"><label>Odd</label><input type="number" step="0.01" id="h-odd" placeholder="3.20"></div>
+          <div class="field sm"><label>Valor apostado</label><input type="number" step="0.01" id="h-stake" placeholder="5.00"></div>
+          <div class="field sm"><label>P(modelo) %</label><input type="number" step="0.1" id="h-p" placeholder="opcional"></div>
+          <button class="secondary" id="h-add">+ Adicionar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Apostas registradas</h3>
+        <table id="hist-table">
+          <thead><tr><th>Data</th><th>Aposta</th><th>Odd</th><th>Stake</th><th>EV</th><th>Status</th><th>Resultado</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint" id="hist-empty">Nenhuma aposta registrada ainda. Use o formulário acima ou "Registrar todas no histórico" na aba Gestão de Banca.</p>
+      </div>
+    </section>
+
+    <!-- ABA RANKING -->
+    <section id="tab-rank" class="panel">
+      <div class="card">
+        <h3>Força das seleções (segundo o modelo)</h3>
+        <p class="hint">Ordenado por ELO. Ataque/defesa são os parâmetros Dixon-Coles (maior = melhor).</p>
+        <table class="rank-table" id="rank-table">
+          <thead><tr><th>#</th><th>Seleção</th><th>ELO</th><th>Ataque</th><th>Defesa</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>⚠️ Ferramenta de <b>estudo estatístico</b>. O modelo não conhece lesões, convocações ou troca de técnico. Mercado é eficiente; <i>edge</i> real é pequeno e raro. Aposte só o que estiver disposto a perder.</p>
+  </footer>
+
+  <datalist id="teams"></datalist>
+  <div id="toast" class="toast"></div>
+
+  <script src="../static/app.js"></script>
+</body>
+</html>
