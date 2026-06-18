@@ -85,7 +85,7 @@ function renderPrediction(d, container) {
       <td colspan="3"><span class="ci">${pct(p5)} – ${pct(p95)} (μ ${pct(mean)})</span></td></tr>`;
   };
 
-  container.innerHTML = `
+  let html = `
   <div class="card result-card">
     <h3>${esc(d.home)} <span class="vs">vs</span> ${esc(d.away)}</h3>
     <table class="result-table">
@@ -101,6 +101,94 @@ function renderPrediction(d, container) {
     </table>
     <p class="hint" style="margin-top:8px">Placar mais provável: <b>${esc(d.most_likely_score)}</b> (λ casa: ${(d.lambda_home||0).toFixed(2)}, λ fora: ${(d.lambda_away||0).toFixed(2)})</p>
     ${ci ? `<p class="hint">Bootstrap ${esc(d.n_bootstrap)} amostras (IC 90%).</p>` : ""}
+  </div>`;
+
+  if (d.stats) html += renderMatchStats(d.stats, d.home, d.away);
+  container.innerHTML = html;
+}
+
+// ── Estatísticas esperadas ──────────────────────────────────────────────────
+function renderMatchStats(s, home, away) {
+  if (!s) return "";
+
+  // barra de probabilidade
+  const bar = (p) => {
+    const w = Math.round(p * 100);
+    const cls = p >= 0.6 ? "high" : p >= 0.35 ? "mid" : "low";
+    return `<div class="prob-bar-wrap">
+      <div class="prob-bar-track"><div class="prob-bar-fill ${cls}" style="width:${w}%"></div></div>
+      <span class="prob-bar-pct">${(p * 100).toFixed(0)}%</span>
+    </div>`;
+  };
+
+  const sr = (label, h, a, t) => `<tr>
+    <td>${label}</td><td>${h}</td><td>${a}</td><td><b>${t}</b></td></tr>`;
+  const br = (label, p) => `<tr>
+    <td>${label}</td><td colspan="3">${bar(p)}</td></tr>`;
+
+  const block = (emoji, title, rows) => `
+  <div class="stat-block">
+    <div class="stat-title">${emoji} ${title}</div>
+    <table class="stat-table">
+      <thead><tr><th></th><th>${esc(home)}</th><th>${esc(away)}</th><th>Total</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+
+  const c = s.corners, sg = s.shots_on_target, ts = s.total_shots;
+  const yc = s.yellow_cards, rc = s.red_cards, f = s.fouls, off = s.offsides;
+
+  return `
+  <div class="card result-card" style="margin-top:12px">
+    <h3>📊 Estatísticas Esperadas</h3>
+
+    <!-- Posse de bola -->
+    <div class="poss-wrap">
+      <span class="poss-label">${esc(home)} ${s.possession_home_pct}%</span>
+      <div class="poss-track">
+        <div class="poss-fill" style="width:${s.possession_home_pct}%"></div>
+      </div>
+      <span class="poss-label right">${s.possession_away_pct}% ${esc(away)}</span>
+    </div>
+
+    <div class="stats-grid">
+      ${block("⛳", "Escanteios", `
+        ${sr("Média esperada", c.home_avg, c.away_avg, c.total_avg)}
+        ${br("Over 8.5", c.over_8_5)}
+        ${br("Over 9.5", c.over_9_5)}
+        ${br("Over 10.5", c.over_10_5)}
+        ${br("Over 11.5", c.over_11_5)}`)}
+
+      ${block("🎯", "Chutes no gol", `
+        ${sr("Média esperada", sg.home_avg, sg.away_avg, sg.total_avg)}
+        ${br("Over 6.5", sg.over_6_5)}
+        ${br("Over 7.5", sg.over_7_5)}
+        ${br("Over 8.5", sg.over_8_5)}`)}
+
+      ${block("⚡", "Chutes totais", `
+        ${sr("Média esperada", ts.home_avg, ts.away_avg, ts.total_avg)}
+        ${br("Over 22.5", ts.over_22_5)}
+        ${br("Over 24.5", ts.over_24_5)}`)}
+
+      ${block("🟨", "Cartões amarelos", `
+        ${sr("Média esperada", yc.home_avg, yc.away_avg, yc.total_avg)}
+        ${br("Over 2.5", yc.over_2_5)}
+        ${br("Over 3.5", yc.over_3_5)}
+        ${br("Over 4.5", yc.over_4_5)}`)}
+
+      ${block("🟥", "Cartão vermelho", `
+        ${sr("Média esperada", rc.home_avg, rc.away_avg, rc.total_avg)}
+        ${br("P(ao menos 1)", rc.prob_any)}`)}
+
+      ${block("🚫", "Faltas", `
+        ${sr("Média esperada", f.home_avg, f.away_avg, f.total_avg)}
+        ${br("Over 24.5", f.over_24_5)}
+        ${br("Over 27.5", f.over_27_5)}`)}
+
+      ${block("🚩", "Impedimentos", `
+        ${sr("Média esperada", off.home_avg, off.away_avg, off.total_avg)}`)}
+    </div>
+    <p class="hint" style="margin-top:10px">Modelos Poisson calibrados em jogos de Copa do Mundo (1966–2022). Derivados dos lambdas Dixon-Coles. Use odds de escanteios/cartões em Pinnacle ou bet365 e compare com as probabilidades acima.</p>
   </div>`;
 }
 
@@ -1220,6 +1308,68 @@ function renderMlBacktest(d, cont) {
       scales: { y: { beginAtZero: false } },
     },
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ABA COPA 2026 — openfootball (sem API key)
+// ══════════════════════════════════════════════════════════════
+document.getElementById("copa-groups-btn")?.addEventListener("click", loadCopaGroups);
+document.getElementById("copa-fixtures-btn")?.addEventListener("click", loadCopaFixtures);
+document.querySelector('[data-tab="copa"]')?.addEventListener("click", () => {
+  if (!document.getElementById("copa-groups-result").innerHTML) loadCopaGroups();
+});
+
+async function loadCopaGroups() {
+  const cont = document.getElementById("copa-groups-result");
+  cont.innerHTML = `<div class="loading">Carregando grupos…</div>`;
+  try {
+    const d = await api("/api/wc2026/groups");
+    if (d.error) { cont.innerHTML = `<div class="card error">${esc(d.error)}</div>`; return; }
+    const groups = d.groups || [];
+    if (!groups.length) { cont.innerHTML = `<div class="card"><p class="hint">Nenhum grupo encontrado.</p></div>`; return; }
+    let html = `<div class="card" style="margin-top:12px"><h3>📋 12 Grupos — Copa 2026</h3><div class="copa-groups-grid">`;
+    for (const g of groups) {
+      html += `<div class="copa-group"><div class="copa-group-title">${esc(g.name || "Grupo")}</div><ul>`;
+      for (const t of (g.teams || [])) {
+        const pts = t.pts != null ? `<span class="copa-pts">${t.pts}pts</span>` : "";
+        html += `<li><span>${esc(t.name || t)}</span>${pts}</li>`;
+      }
+      html += `</ul></div>`;
+    }
+    html += `</div></div>`;
+    cont.innerHTML = html;
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
+}
+
+async function loadCopaFixtures() {
+  const cont = document.getElementById("copa-fixtures-result");
+  cont.innerHTML = `<div class="loading">Carregando fixtures…</div>`;
+  try {
+    const d = await api("/api/wc2026/fixtures");
+    if (d.error) { cont.innerHTML = `<div class="card error">${esc(d.error)}</div>`; return; }
+    const rounds = d.rounds || [];
+    if (!rounds.length) { cont.innerHTML = `<div class="card"><p class="hint">Nenhuma fixture encontrada.</p></div>`; return; }
+    let html = `<div class="card" style="margin-top:12px"><h3>📅 Fixtures — Copa 2026</h3>`;
+    for (const round of rounds) {
+      html += `<h4 class="market-cat" style="margin-top:14px">${esc(round.name || "Rodada")}</h4><div class="copa-fixtures-list">`;
+      for (const m of (round.matches || [])) {
+        const t1 = m.team1?.name || m.team1 || "?";
+        const t2 = m.team2?.name || m.team2 || "?";
+        const hasScore = m.score1 != null && m.score2 != null;
+        const score = hasScore
+          ? `<span class="copa-match-score">${m.score1} – ${m.score2}</span>`
+          : `<span class="copa-match-score pending">${(m.time || m.date || "–")}</span>`;
+        html += `<div class="copa-match">
+          <span class="copa-match-date">${esc(m.date || "")}</span>
+          <span class="copa-match-teams">${esc(t1)} <span class="vs">vs</span> ${esc(t2)}</span>
+          ${score}
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
+    cont.innerHTML = html;
+  } catch (e) { cont.innerHTML = `<div class="card error">${esc(e.message)}</div>`; }
 }
 
 // ── Boot ─────────────────────────────────────────────────────

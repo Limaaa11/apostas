@@ -297,3 +297,91 @@ footer{
   .agent-examples{flex-direction:column}
   button.example-btn{font-size:.75rem;padding:4px 10px}
 }
+
+/* ══════════════════════════════════════════════════════════
+   ESTATÍSTICAS ESPERADAS (previsão expandida)
+════════════════════════════════════════════════════════════ */
+.stats-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+  gap:14px;margin-top:16px;
+}
+.stat-block{
+  background:#111827;border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px;
+}
+.stat-title{
+  font-size:.82rem;font-weight:700;color:var(--accent2);
+  text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;
+}
+.stat-table{font-size:.8rem;width:100%}
+.stat-table th{color:var(--muted);font-weight:500;padding:3px 6px;text-align:right}
+.stat-table th:first-child{text-align:left}
+.stat-table td{padding:3px 6px;text-align:right;border-bottom:1px solid #1e2535}
+.stat-table td:first-child{text-align:left;color:var(--muted)}
+.stat-table tr:last-child td{border-bottom:none}
+.stat-table b{color:var(--txt)}
+
+/* Barra de probabilidade inline */
+.prob-bar-wrap{
+  display:flex;align-items:center;gap:6px;
+  background:#0e1117;border-radius:4px;padding:2px 4px;
+}
+.prob-bar-track{flex:1;height:6px;background:#1e2535;border-radius:3px;overflow:hidden}
+.prob-bar-fill{height:100%;border-radius:3px;transition:.3s}
+.prob-bar-fill.high{background:var(--good)}
+.prob-bar-fill.mid{background:var(--warn)}
+.prob-bar-fill.low{background:var(--muted)}
+.prob-bar-pct{font-size:.75rem;font-weight:700;min-width:34px;text-align:right}
+
+/* Barra de posse */
+.poss-wrap{
+  display:flex;align-items:center;gap:8px;
+  margin:10px 0 16px;font-size:.8rem;
+}
+.poss-label{min-width:70px;font-weight:600}
+.poss-label.right{text-align:right}
+.poss-track{
+  flex:1;height:10px;border-radius:5px;
+  background:var(--border);overflow:hidden;
+}
+.poss-fill{height:100%;background:var(--accent);border-radius:5px}
+
+/* ── Copa 2026 tab ─────────────────────────────────────── */
+.copa-groups-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+  gap:12px;margin-top:12px;
+}
+.copa-group{
+  background:#111827;border:1px solid var(--border);
+  border-radius:10px;padding:10px 14px;
+}
+.copa-group-title{
+  font-size:.82rem;font-weight:700;color:var(--accent);
+  margin-bottom:6px;text-transform:uppercase;
+}
+.copa-group ul{list-style:none;padding:0;margin:0}
+.copa-group li{
+  font-size:.82rem;padding:3px 0;
+  border-bottom:1px solid #1e2535;display:flex;justify-content:space-between;
+}
+.copa-group li:last-child{border-bottom:none}
+.copa-pts{font-weight:700;color:var(--warn)}
+.copa-fixtures-list{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.copa-match{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:#111827;border:1px solid var(--border);
+  border-radius:8px;padding:8px 12px;font-size:.82rem;
+}
+.copa-match-date{color:var(--muted);min-width:82px}
+.copa-match-teams{flex:1;font-weight:600}
+.copa-match-score{
+  font-weight:700;color:var(--accent2);
+  background:#22c55e18;padding:2px 8px;border-radius:6px;
+}
+.copa-match-score.pending{color:var(--muted);background:transparent}
+
+@media(max-width:768px){
+  .stats-grid{grid-template-columns:1fr}
+  .copa-groups-grid{grid-template-columns:repeat(2,1fr)}
+}

@@ -29,6 +29,7 @@
     <button class="tab" data-tab="calibracao">🎯 Calibração</button>
     <button class="tab" data-tab="ml">🧠 Modelo ML</button>
     <button class="tab" data-tab="agente">🤖 Agente IA</button>
+    <button class="tab" data-tab="copa">🌎 Copa 2026</button>
   </nav>
 
   <main>
@@ -428,6 +429,20 @@
           <button class="primary" id="ag-send">Enviar</button>
         </div>
       </div>
+    </section>
+
+    <!-- ABA COPA 2026 -->
+    <section id="tab-copa" class="panel">
+      <div class="card">
+        <h3>🌎 Copa do Mundo 2026 — Grupos &amp; Fixtures</h3>
+        <p class="hint">Dados via <a href="https://github.com/openfootball/worldcup.json" class="link" target="_blank">openfootball</a> (open-source, sem API key). Resultados atualizados conforme jogos acontecem.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <button class="primary" id="copa-groups-btn">📋 Carregar grupos</button>
+          <button class="secondary" id="copa-fixtures-btn">📅 Carregar fixtures</button>
+        </div>
+      </div>
+      <div id="copa-groups-result"></div>
+      <div id="copa-fixtures-result"></div>
     </section>
 
   </main>

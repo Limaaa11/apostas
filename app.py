@@ -39,6 +39,7 @@ import clv_tracker
 import tournament
 import agent as ag
 import ml_pipeline as ml
+import stats_fetcher as sf
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -154,6 +155,10 @@ def predict():
     pred = m.predict(d["home"], d["away"], bool(d.get("neutral", True)))
     if pred is None:
         return jsonify({"error": "Um dos times não está na base de treino do modelo."}), 400
+    pred["stats"] = sf.predict_match_stats(
+        pred.get("lambda_home", 1.2),
+        pred.get("lambda_away", 1.0),
+    )
     return jsonify(pred)
 
 
@@ -674,6 +679,24 @@ def ml_backtest():
 
 # --------------------------------------------------------------------------- #
 # Inicialização
+# --------------------------------------------------------------------------- #
+# Copa 2026 — dados estáticos via openfootball (sem API key)
+# --------------------------------------------------------------------------- #
+
+@app.route("/api/wc2026/fixtures")
+@limiter.limit("20 per minute")
+def wc2026_fixtures():
+    """Todos os 104 jogos da Copa 2026 com resultados (openfootball)."""
+    return jsonify(sf.get_wc2026_fixtures())
+
+
+@app.route("/api/wc2026/groups")
+@limiter.limit("20 per minute")
+def wc2026_groups():
+    """12 grupos com times e pontuação (openfootball)."""
+    return jsonify(sf.get_wc2026_groups())
+
+
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
